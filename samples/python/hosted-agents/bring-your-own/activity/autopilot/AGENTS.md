@@ -8,18 +8,18 @@ bot. The platform handles hosting, security, scaling, and observability.
 
 ## Deployment mode
 
-- **Direct code deployment:** `azure.yaml` declares the Python runtime and
-  `main.py` entry point (`kind: hosted`, `codeConfiguration`). `azd deploy`
-  packages and deploys the agent directly — no Dockerfile or Azure Container
-  Registry build.
+- **Container deploy:** `azure.yaml` self-provisions a Foundry project + Container
+  Registry (`infra: provider: microsoft.foundry`) and builds the agent as a Docker
+  image (remote ACR build via `docker: remoteBuild: true`), the same as the
+  [`echo`](../echo) sample. Digital Worker samples must use container deploy, not
+  direct code deploy (`codeConfiguration`) — the latter currently does not apply
+  `activity.digitalWorkerType` to the created agent.
 - **Activity ingress:** hosted Activity protocol traffic is forwarded to
   `POST /activity/messages`.
-- **Bring your own project:** this sample does not provision infrastructure
-  (no `infra:` block). It deploys into an **existing** Foundry project
-  supplied by the active `azd` environment (`AZURE_SUBSCRIPTION_ID`,
-  `AZURE_LOCATION`, `AZURE_AI_PROJECT_ID`, `FOUNDRY_PROJECT_ENDPOINT`). Do not
-  run `azd provision` or `azd up`.
-- **Digital-worker auth model:** `main.py` constructs
+- **Explicit authorization scheme:** `agentEndpoint.authorizationSchemes` is set to
+  `BotServiceTenant` explicitly. Omitting it lets the service fall back to
+  `BotServiceRbac`, which does not authorize a Digital Worker's bot-service token.
+- **Digital-worker auth model:** `src/echo-autopilot/main.py` constructs
   `ActivityAgentServerHost(digital_worker=True)`. Outbound Bot Connector
   tokens are minted from the agent's managed identity **blueprint** via
   federated identity, matching the tenant-scoped Autopilot publishing model
@@ -29,11 +29,12 @@ bot. The platform handles hosting, security, scaling, and observability.
 
 ## Key files
 
-- `azure.yaml` — hosted-agent service, direct code deployment, and the
-  `activity.useCase: digital_worker` / `activity.publish` Autopilot metadata
-- `main.py` — the activity handlers (`message` echoes the user's text;
-  `conversationUpdate` welcomes new members)
-- `requirements.txt` — Python runtime dependencies
+- `azure.yaml` — hosted-agent service (container/ACR deploy) and the
+  `activity.digitalWorkerType: m365` / `activity.publish` Autopilot metadata
+- `src/echo-autopilot/main.py` — the activity handlers (`message` echoes the user's
+  text; `conversationUpdate` welcomes new members)
+- `src/echo-autopilot/Dockerfile` — container image definition
+- `src/echo-autopilot/requirements.txt` — Python runtime dependencies
 
 ## Development workflow
 

@@ -23,7 +23,7 @@ async def on_message(context, state):
 host.run()
 ```
 
-See [main.py](main.py) for the complete implementation, including the `conversationUpdate` welcome handler and the error handler.
+See [src/echo-autopilot/main.py](src/echo-autopilot/main.py) for the complete implementation, including the `conversationUpdate` welcome handler and the error handler.
 
 ### Agent Hosting
 
@@ -31,9 +31,11 @@ The agent runs on the [Azure AI AgentServer Activity SDK](https://pypi.org/proje
 
 ### Agent Deployment and Publication
 
-Unlike [`echo`](../echo) (which provisions its own Foundry project + Container Registry via `azd provision`), this sample uses **direct code deployment** into an **existing** Foundry project: `azure.yaml` has no `infra:` block, so `azd deploy` packages and ships the Python code straight to the project identified by the active `azd` environment — no Docker build required.
+Like [`echo`](../echo), this sample provisions its own Foundry project + Container Registry (`infra: provider: microsoft.foundry`) and deploys the agent as a **container image** (remote ACR build via `docker: remoteBuild: true`), not a direct code (ZIP) deploy. This matters: at the time of writing, the direct-code-deploy (`codeConfiguration`) path silently drops the `activity.digitalWorkerType` setting on the created agent, so Digital Worker / Autopilot samples must use the container deploy path instead.
 
-Publishing the agent as a Microsoft 365 Autopilot is a separate, explicit step (`azd ai agent publish`) driven by the `activity.useCase: digital_worker` and `activity.publish` metadata in [azure.yaml](azure.yaml). After publishing, a tenant administrator approves the resulting agent identity blueprint before it can be instantiated in Teams.
+`azure.yaml` also sets `agentEndpoint.authorizationSchemes: [{type: BotServiceTenant}]` explicitly — omitting it lets the service fall back to `BotServiceRbac`, which does not authorize a Digital Worker's bot-service token.
+
+Publishing the agent as a Microsoft 365 Autopilot is a separate, explicit step (`azd ai agent publish`) driven by the `activity.digitalWorkerType: m365` and `activity.publish` metadata in [azure.yaml](azure.yaml). After publishing, a tenant administrator approves the resulting agent identity blueprint before it can be instantiated in Teams.
 
 ## Prerequisites
 
@@ -41,10 +43,10 @@ Make sure the following are installed and available:
 
 | Requirement | Why you need it |
 |-------------|-----------------|
-| [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | Deploys and publishes the agent. Use **1.31.2 or later**. Install the agent service target with `azd extension install azure.ai.agents`. |
+| [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | Provisions, deploys, and publishes the agent. Use **1.33 or later**. Install the agent service target with `azd extension install azure.ai.agents` (requires `>=1.0.0-beta.16`). |
 | [Azure CLI (`az`)](https://learn.microsoft.com/cli/azure/install-azure-cli) | Authentication (`az login`). |
 | [Python 3.10+](https://www.python.org/downloads/) | The agent runtime (handy for local edits). |
-| An existing Microsoft Foundry project and model deployment | This sample does not provision one — see [Configure an existing Foundry project](#configure-an-existing-foundry-project) below. |
+| [Docker](https://www.docker.com/products/docker-desktop/) | **Optional.** `azd deploy` uses a remote ACR build (`docker: remoteBuild: true`), so you don't need Docker unless you want to build the image locally. |
 | A Microsoft 365 tenant with Microsoft Agent 365 | Required to publish and approve the Autopilot. |
 
 ### Required permissions
@@ -58,7 +60,7 @@ Make sure the following are installed and available:
 
 ## Local Debug in VS Code
 
-Add this folder (`autopilot/`) as a VS Code workspace root, then run `main.py` under the debugger (`python main.py`) after installing `requirements.txt` into a virtual environment. Use [M365 Agents Playground](https://github.com/microsoft/Agents/blob/main/docs/HowTo/Playground.md) to chat with it locally, the same way as the [`echo`](../echo) sample.
+Add `src/echo-autopilot/` as a VS Code workspace root, then run `main.py` under the debugger (`python main.py`) after installing `requirements.txt` into a virtual environment. Use [M365 Agents Playground](https://github.com/microsoft/Agents/blob/main/docs/HowTo/Playground.md) to chat with it locally, the same way as the [`echo`](../echo) sample.
 
 ## Deploying and Publishing the Agent
 
@@ -76,26 +78,14 @@ azd auth login --tenant-id <tenant-id>
 azd env new myechoautopilot
 ```
 
-### Step 2: Point at an existing Foundry project
-
-```powershell
-azd env set AZURE_SUBSCRIPTION_ID <subscription-id>
-azd env set AZURE_LOCATION <foundry-project-region>
-azd env set AZURE_AI_PROJECT_ID <foundry-project-resource-id>
-azd env set FOUNDRY_PROJECT_ENDPOINT <foundry-project-endpoint>
-```
-
-Copy the project resource ID, endpoint, and region from **Manage** > **Project details** in the Foundry portal. `AZURE_SUBSCRIPTION_ID` is required separately even though the project resource ID contains it, and `AZURE_LOCATION` must match the existing project's region.
-
-### Step 3: Deploy the code
+### Step 2: Provision and deploy
 
 ```bash
-azd deploy
+azd provision   # Foundry project + Container Registry
+azd deploy      # remote ACR build → agent version (activity protocol, BotServiceTenant, m365 digital worker type)
 ```
 
-This packages `main.py` and `requirements.txt` and creates a new hosted-agent version in the existing project. It does not publish or update the Microsoft 365 app.
-
-### Step 4: Publish the Autopilot
+### Step 3: Publish the Autopilot
 
 ```bash
 azd ai agent publish
@@ -103,26 +93,28 @@ azd ai agent publish
 
 This reads the `activity.publish` metadata in [azure.yaml](azure.yaml) and submits the Microsoft 365 publication for the agent identity blueprint.
 
-### Step 5: Approve and create an instance
+### Step 4: Approve and create an instance
 
 1. An **AI Administrator** or **Global Administrator** opens [Agents in the Microsoft 365 admin center](https://admin.cloud.microsoft/?#/agents/all/requested), approves the pending blueprint, and verifies it appears in the Agent 365 registry.
 2. A licensed user opens **Apps** > **Agents for your team** in Teams, selects the approved blueprint, and creates an instance.
 
-### Step 6: Chat with it in Teams
+### Step 5: Chat with it in Teams
 
 Send the instance a message — it echoes back.
 
 ## What the deployment sets up
 
-1. **Container image** *(`azd deploy`).* The `azure.ai.agent` service target packages this Python sample directly (no Dockerfile) into the existing Foundry project.
-2. **Agent version + blueprint** *(`azd deploy`).* Creating the agent version makes the Foundry service auto-create the Managed Agent Identity Blueprint (MAIB) used for outbound auth.
-3. **Microsoft 365 Autopilot publication** *(`azd ai agent publish`).* Submits the blueprint for tenant-wide Microsoft 365 publication using the `activity.publish` metadata.
-4. **Approval + instance** *(Microsoft 365 admin center + Teams).* A tenant admin approves the blueprint, then a licensed user creates an instance in Teams.
+1. **Foundry project + ACR** *(`azd provision`).* A project enabled for hosted agents and a Container Registry to build and store images.
+2. **Container image** *(`azd deploy`).* The `azure.ai.agent` service target builds this Python sample into a Docker image with a remote ACR build and pushes it.
+3. **Agent version + blueprint** *(`azd deploy`).* Creating the agent version makes the Foundry service auto-create the Managed Agent Identity Blueprint (MAIB) used for outbound auth, with `activity.digitalWorkerType: m365` and the `BotServiceTenant` authorization scheme applied to the endpoint.
+4. **Microsoft 365 Autopilot publication** *(`azd ai agent publish`).* Submits the blueprint for tenant-wide Microsoft 365 publication using the `activity.publish` metadata.
+5. **Approval + instance** *(Microsoft 365 admin center + Teams).* A tenant admin approves the blueprint, then a licensed user creates an instance in Teams.
 
 ## Key files
 
 | File | Purpose |
 | --- | --- |
-| `azure.yaml` | Hosted-agent deployment + Autopilot publication metadata |
-| `main.py` | Activity handlers and the `ActivityAgentServerHost(digital_worker=True)` setup |
-| `requirements.txt` | Python runtime dependencies |
+| `azure.yaml` | Hosted-agent deployment (container/ACR) + Autopilot publication metadata |
+| `src/echo-autopilot/main.py` | Activity handlers and the `ActivityAgentServerHost(digital_worker=True)` setup |
+| `src/echo-autopilot/Dockerfile` | Container image definition |
+| `src/echo-autopilot/requirements.txt` | Python runtime dependencies |

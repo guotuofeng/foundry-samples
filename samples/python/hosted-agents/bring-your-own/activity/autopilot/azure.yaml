@@ -2,9 +2,11 @@
 
 requiredVersions:
   extensions:
-    azure.ai.agents: '>=1.0.0-beta.13'
+    azure.ai.agents: '>=1.0.0-beta.16'
 name: echo-autopilot
 services:
+  ai-project:
+    host: azure.ai.project
   echo-autopilot:
     host: azure.ai.agent
     metadata:
@@ -13,11 +15,10 @@ services:
         - Activity Protocol
         - Bring Your Own
         - Python
-    project: .
+    project: src/echo-autopilot
     language: python
-    codeConfiguration:
-      runtime: python_3_13
-      entryPoint: main.py
+    uses:
+      - ai-project
     kind: hosted
     name: echo-autopilot
     displayName: Echo (Python, Autopilot)
@@ -30,8 +31,16 @@ services:
     protocols:
       - protocol: activity
         version: 2.0.0
+    agentEndpoint:
+      protocols:
+        - activity
+      authorizationSchemes:
+        # M365 Digital Workers are tenant-scoped. Keep this explicit because
+        # omitting the scheme lets the service fall back to BotServiceRbac,
+        # which does not authorize a Digital Worker's bot-service token.
+        - type: BotServiceTenant
     activity:
-      useCase: digital_worker
+      digitalWorkerType: m365
       publish:
         publishScope: tenant
         canRespondWithoutMention: true
@@ -54,3 +63,7 @@ services:
       resources:
         cpu: '0.5'
         memory: 1Gi
+    docker:
+      remoteBuild: true
+infra:
+  provider: microsoft.foundry
