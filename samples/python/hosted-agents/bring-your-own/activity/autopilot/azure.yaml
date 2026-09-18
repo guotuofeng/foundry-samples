@@ -3,24 +3,25 @@
 requiredVersions:
   extensions:
     azure.ai.agents: '>=1.0.0-beta.16'
-name: echo-autopilot
+name: autopilot
 services:
   ai-project:
     host: azure.ai.project
-  echo-autopilot:
+  autopilot:
     host: azure.ai.agent
     metadata:
       tags:
+        - AI Agent Hosting
         - Autopilot
         - Activity Protocol
         - Bring Your Own
         - Python
-    project: src/echo-autopilot
+    project: src/autopilot
     language: python
     uses:
       - ai-project
     kind: hosted
-    name: echo-autopilot
+    name: autopilot
     displayName: Echo (Python, Autopilot)
     description: >
       Minimal echo agent using the Activity protocol with a bring-your-own
@@ -67,3 +68,4 @@ services:
       remoteBuild: true
 infra:
   provider: microsoft.foundry
+

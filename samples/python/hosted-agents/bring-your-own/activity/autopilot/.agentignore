@@ -8,8 +8,6 @@
 __pycache__/
 *.py[cod]
 AGENTS.md
+CLAUDE.md
 README.md
 azure.yaml
-.env.example
-.dockerignore
-Dockerfile

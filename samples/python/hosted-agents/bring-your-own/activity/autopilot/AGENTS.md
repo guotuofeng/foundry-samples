@@ -19,7 +19,7 @@ bot. The platform handles hosting, security, scaling, and observability.
 - **Explicit authorization scheme:** `agentEndpoint.authorizationSchemes` is set to
   `BotServiceTenant` explicitly. Omitting it lets the service fall back to
   `BotServiceRbac`, which does not authorize a Digital Worker's bot-service token.
-- **Digital-worker auth model:** `src/echo-autopilot/main.py` constructs
+- **Digital-worker auth model:** `src/autopilot/main.py` constructs
   `ActivityAgentServerHost(digital_worker=True)`. Outbound Bot Connector
   tokens are minted from the agent's managed identity **blueprint** via
   federated identity, matching the tenant-scoped Autopilot publishing model
@@ -31,17 +31,18 @@ bot. The platform handles hosting, security, scaling, and observability.
 
 - `azure.yaml` — hosted-agent service (container/ACR deploy) and the
   `activity.digitalWorkerType: m365` / `activity.publish` Autopilot metadata
-- `src/echo-autopilot/main.py` — the activity handlers (`message` echoes the user's
+- `src/autopilot/main.py` — the activity handlers (`message` echoes the user's
   text; `conversationUpdate` welcomes new members)
-- `src/echo-autopilot/Dockerfile` — container image definition
-- `src/echo-autopilot/requirements.txt` — Python runtime dependencies
+- `src/autopilot/Dockerfile` — container image definition
+- `src/autopilot/requirements.txt` — Python runtime dependencies
 
 ## Development workflow
 
 The **Azure Developer CLI (`azd`)** manages the full lifecycle:
 
 ```bash
-azd deploy              # Deploy the code to the existing Foundry project
+azd provision            # Provision the self-owned Foundry project + ACR
+azd deploy               # Container deploy (remote ACR build)
 azd ai agent publish     # Publish the Microsoft 365 Autopilot (separate step)
 ```
 
