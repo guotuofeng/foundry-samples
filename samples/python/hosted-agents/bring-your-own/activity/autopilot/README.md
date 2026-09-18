@@ -23,7 +23,7 @@ async def on_message(context, state):
 host.run()
 ```
 
-See [src/autopilot/main.py](src/autopilot/main.py) for the complete implementation, including the `conversationUpdate` welcome handler and the error handler.
+See [src/autopilot-activity/main.py](src/autopilot-activity/main.py) for the complete implementation, including the `conversationUpdate` welcome handler and the error handler.
 
 ### Agent Hosting
 
@@ -60,7 +60,7 @@ Make sure the following are installed and available:
 
 ## Local Debug in VS Code
 
-Add `src/autopilot/` as a VS Code workspace root, then run `main.py` under the debugger (`python main.py`) after installing `requirements.txt` into a virtual environment. Use [M365 Agents Playground](https://github.com/microsoft/Agents/blob/main/docs/HowTo/Playground.md) to chat with it locally, the same way as the [`echo`](../echo) sample.
+Add `src/autopilot-activity/` as a VS Code workspace root, then run `main.py` under the debugger (`python main.py`) after installing `requirements.txt` into a virtual environment. Use [M365 Agents Playground](https://github.com/microsoft/Agents/blob/main/docs/HowTo/Playground.md) to chat with it locally, the same way as the [`echo`](../echo) sample.
 
 ## Deploying and Publishing the Agent
 
@@ -115,6 +115,6 @@ Send the instance a message — it echoes back.
 | File | Purpose |
 | --- | --- |
 | `azure.yaml` | Hosted-agent deployment (container/ACR) + Autopilot publication metadata |
-| `src/autopilot/main.py` | Activity handlers and the `ActivityAgentServerHost(digital_worker=True)` setup |
-| `src/autopilot/Dockerfile` | Container image definition |
-| `src/autopilot/requirements.txt` | Python runtime dependencies |
+| `src/autopilot-activity/main.py` | Activity handlers and the `ActivityAgentServerHost(digital_worker=True)` setup |
+| `src/autopilot-activity/Dockerfile` | Container image definition |
+| `src/autopilot-activity/requirements.txt` | Python runtime dependencies |

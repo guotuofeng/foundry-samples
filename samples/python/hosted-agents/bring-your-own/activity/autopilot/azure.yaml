@@ -16,7 +16,7 @@ services:
         - Activity Protocol
         - Bring Your Own
         - Python
-    project: src/autopilot
+    project: src/autopilot-activity
     language: python
     uses:
       - ai-project
