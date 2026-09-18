@@ -28,7 +28,7 @@ def main():
 
     agent = Agent(
         client=client,
-        instructions="You are a friendly assistant. Keep your answers brief.",
+        instructions="You are a friendly assistant. Answer directly and keep your responses brief.",
         # History will be managed by the hosting infrastructure, thus there
         # is no need to store history by the service. Learn more at:
         # https://developers.openai.com/api/reference/resources/responses/methods/create
