@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 import os
-from random import randint
+from random import choice, randint
 
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
@@ -21,7 +21,7 @@ def get_weather(
 ) -> str:
     """Get the weather for a given location."""
     conditions = ["sunny", "cloudy", "rainy", "stormy"]
-    return f"The weather in {location} is {conditions[randint(0, 3)]} with a high of {randint(10, 30)}°C."
+    return f"The weather in {location} is {choice(conditions)} with a high of {randint(10, 30)}°C."
 
 
 def main():
