@@ -12,8 +12,6 @@ workflow checkpoint.
 
 ## How it works
 
-The workflow contains two executors:
-
 ```mermaid
 flowchart LR
     Agent[Crash Recovery Agent]
@@ -59,9 +57,8 @@ superstep, then calls `Environment.Exit(70)`. In the replacement process,
 then returns a `FunctionResultContent` with the same call ID, and the Agent Executor continues the
 original turn.
 
-No marker file or external application state is used. Run each crash demonstration in a new
-session and conversation so a checkpoint restoration unambiguously belongs to that interrupted
-turn.
+No marker file or external application state is used. Run each crash demonstration in a new session
+and conversation so a checkpoint restoration unambiguously belongs to that interrupted turn.
 
 Resilience is enabled when the Responses server is first registered:
 
@@ -107,9 +104,6 @@ azd ai agent init \
 cd resilient-workflow
 ```
 
-The explicit deployment mode ensures `azd` builds the included `Dockerfile` instead of using its
-default ZIP-based code deployment.
-
 ### Provision and run locally
 
 ```bash
@@ -130,23 +124,23 @@ azd ai agent invoke --local \
 azd deploy
 ```
 
-After the first deployment, assign the hosted agent identity the **Foundry User** role on the target
-Foundry project:
+Assign the hosted agent identity the **Foundry User** role:
 
-```powershell
-$agent = azd ai agent show resilient-workflow -o json | ConvertFrom-Json
-$projectId = azd env get-value AZURE_AI_PROJECT_ID
+```bash
+azd ai agent show resilient-workflow -o json
+azd env get-value AZURE_AI_PROJECT_ID
 
-az role assignment create `
-  --assignee-object-id $agent.instance_identity.principal_id `
-  --assignee-principal-type ServicePrincipal `
-  --role "Foundry User" `
-  --scope $projectId
+az role assignment create \
+  --assignee-object-id <instance_identity.principal_id> \
+  --assignee-principal-type ServicePrincipal \
+  --role "Foundry User" \
+  --scope <AZURE_AI_PROJECT_ID>
 ```
 
-Allow a few minutes for role assignment propagation before the first workflow request. If you
-invoked the workflow before assigning the role, redeploy after assigning it so the hosted process
-does not continue using a managed identity token acquired before the permission existed.
+Copy `instance_identity.principal_id` from the first command and the project resource ID from the
+second command into the role-assignment command. Allow a few minutes for propagation. If the
+workflow was invoked before assigning the role, redeploy so the hosted process does not continue
+using a managed identity token acquired before the permission existed.
 
 ### Verify the deployed agent
 
@@ -157,92 +151,37 @@ azd ai agent invoke --new-session --new-conversation \
 
 ## Exercise crash recovery
 
-Run this PowerShell script from the initialized project directory:
+Start a stored background response and return after `azd` receives its response ID:
 
-```powershell
-$agent = azd ai agent show resilient-workflow -o json | ConvertFrom-Json
-$endpoint = $agent.agent_endpoints.responses
-$responsesBase = $endpoint.Split("?")[0]
-$accessToken = az account get-access-token `
-  --resource https://ai.azure.com `
-  --query accessToken `
-  -o tsv
-$headers = @{
-  Authorization = "Bearer $accessToken"
-  "Content-Type" = "application/json"
-  "Foundry-Features" = "HostedAgents=V1Preview"
-}
-$body = @{
-  model = "resilient-workflow"
-  input = "Call simulate_crash to demonstrate crash recovery, then report the result."
-  background = $true
-  store = $true
-  stream = $false
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod `
-  -Method POST `
-  -Uri $endpoint `
-  -Headers $headers `
-  -Body $body
-
-Write-Host "Accepted $($response.id) with status $($response.status)."
-
-$deadline = (Get-Date).AddMinutes(6)
-do {
-  Start-Sleep 2
-  try {
-    $response = Invoke-RestMethod `
-      -Method GET `
-      -Uri ($responsesBase + "/" + $response.id + "?api-version=v1") `
-      -Headers $headers
-  }
-  catch {
-    $statusCode = $_.Exception.Response.StatusCode.value__
-    if ($_.Exception -is [System.Threading.Tasks.TaskCanceledException] `
-      -or $statusCode -in 404, 409, 424, 500, 502, 503) {
-      continue
-    }
-    throw
-  }
-} while ($response.status -notin "completed", "failed", "cancelled", "incomplete" `
-  -and (Get-Date) -lt $deadline)
-
-$response | ConvertTo-Json -Depth 20
+```bash
+azd ai agent invoke \
+  --new-session \
+  --new-conversation \
+  --long-running \
+  --no-wait \
+  "Call simulate_crash to demonstrate crash recovery, then report the result."
 ```
 
-The initial POST returns before the tool terminates the process. Polling can temporarily time out or
-return `404`, `409`, `424`, or a retryable `5xx` while Foundry starts the replacement process.
-Continue retrieving the same response ID. The final response must be `completed` and explain that
-the crash recovery succeeded.
+The command saves the response ID as the current invocation and prints it under `Response`. Follow
+that same stored response through process replacement:
+
+```bash
+azd ai agent invocations follow
+```
+
+`follow` replays persisted output and continues waiting while Foundry starts the replacement process.
+If it exits with a transient timeout while the replacement process starts, run the same command
+again. The response ID remains saved, so the next `follow` resumes the stored response. The final
+response must explain that crash recovery succeeded.
 
 ## Option 2: VS Code (Foundry Toolkit)
 
-### Prerequisites
+Install the Foundry Toolkit and C# Dev Kit extensions. Press **F5** for normal prompts. Use the
+`azd ai agent invoke --long-running --no-wait` and `azd ai agent invocations follow` commands above
+for the crash demonstration.
 
-1. VS Code with the [Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio) extension.
-2. The [C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit) extension.
-3. Azure CLI authenticated with `az login`.
-
-### Run and debug
-
-Press **F5**. The agent starts and Agent Inspector opens automatically.
-
-For a manual run, copy `.env.example` to `.env`, fill in the values, then run:
-
-```bash
-dotnet restore
-dotnet run
-```
-
-Use Agent Inspector for normal prompts. Use the PowerShell script above for the crash demonstration
-because it preserves the stored response ID while the hosted process restarts.
-
-### Deploy
-
-Run **Foundry Toolkit: Deploy Hosted Agent**, select **Container** as the deployment method, select
-the Foundry project, confirm the deployment settings, and deploy. Assign the resulting agent
-identity the **Foundry User** role on the project before invoking the workflow.
+For deployment, run **Foundry Toolkit: Deploy Hosted Agent**, select **Container**, deploy, and assign
+the resulting agent identity the **Foundry User** role before invoking the workflow.
 
 ## Recovery and side effects
 
@@ -277,10 +216,11 @@ azd ai agent invoke --new-session --new-conversation --output raw \
   "Reply with [DIAGNOSTIC]. Do not call any tools."
 ```
 
-Check the final `response.completed` or `response.failed` event. The friendly CLI output can be empty
-for a failed response even when the command itself exits successfully.
+Check the final `response.completed` or `response.failed` event. Friendly CLI output can be empty for
+a failed response even when the command itself exits successfully.
 
 ## Next steps
 
 - [Steering sample](../steering/)
+- [Steerable workflow sample](../steerable-workflow/)
 - [Hosted agents overview](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agents)

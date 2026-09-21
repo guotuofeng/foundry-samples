@@ -17,6 +17,8 @@ var projectEndpoint = new Uri(Environment.GetEnvironmentVariable("FOUNDRY_PROJEC
 var deployment = Environment.GetEnvironmentVariable("AZURE_AI_MODEL_DEPLOYMENT_NAME")
     ?? throw new InvalidOperationException("AZURE_AI_MODEL_DEPLOYMENT_NAME environment variable is not set.");
 
+// A declaration exposes the tool schema to the model without providing an in-agent implementation.
+// The resulting unterminated function call can therefore cross a workflow checkpoint boundary.
 AIFunctionDeclaration simulateCrash = AIFunctionFactory.CreateDeclaration(
     name: "simulate_crash",
     description: "Terminate the current agent process to demonstrate durable workflow recovery. Call only when the user explicitly requests a crash recovery demonstration.",
@@ -52,11 +54,15 @@ ExecutorBinding agentExecutor = crashAgent.BindAsExecutor(new AIAgentHostOptions
 {
     EmitAgentUpdateEvents = true,
     EmitAgentResponseEvents = true,
+    // Route the model's pending FunctionCallContent into the workflow instead of raising it to the
+    // hosting client. AIAgentHostExecutor checkpoints that pending call before the tool executor runs.
     InterceptUnterminatedFunctionCalls = true,
 });
 var crashToolExecutor = new CrashToolExecutor();
 
 AIAgent agent = new WorkflowBuilder(agentExecutor)
+    // The tool result returns through the reverse edge with the original CallId, allowing the
+    // restored Agent Executor to continue the same model turn after process replacement.
     .AddEdge(agentExecutor, crashToolExecutor)
     .AddEdge(crashToolExecutor, agentExecutor)
     .WithOutputFrom(agentExecutor)
@@ -82,6 +88,8 @@ app.Run();
 internal sealed class CrashToolExecutor()
     : Executor<FunctionCallContent>("simulate-crash-tool")
 {
+    // This flag is deliberately process-local. It is set by workflow restoration, not persisted by
+    // the sample, so the replacement process can distinguish recovery without an external marker.
     private bool _restoredFromCheckpoint;
 
     public override async ValueTask HandleAsync(
@@ -118,6 +126,8 @@ internal sealed class CrashToolExecutor()
         IWorkflowContext context,
         CancellationToken cancellationToken = default)
     {
+        // The pending FunctionCallContent was already saved by the Agent Executor superstep. It is
+        // delivered again after this hook, so the executor can return the result instead of crashing.
         this._restoredFromCheckpoint = true;
         return ValueTask.CompletedTask;
     }

@@ -14,6 +14,8 @@ var projectEndpoint = new Uri(Environment.GetEnvironmentVariable("FOUNDRY_PROJEC
 var deployment = Environment.GetEnvironmentVariable("AZURE_AI_MODEL_DEPLOYMENT_NAME")
     ?? throw new InvalidOperationException("AZURE_AI_MODEL_DEPLOYMENT_NAME environment variable is not set.");
 
+// Steering is an AgentServer conversation capability, so a regular model-backed agent is enough;
+// no workflow or application-managed queue is required for this sample.
 AIAgent agent = new AIProjectClient(projectEndpoint, new DefaultAzureCredential())
     .AsAIAgent(
         model: deployment,
@@ -27,7 +29,8 @@ AIAgent agent = new AIProjectClient(projectEndpoint, new DefaultAzureCredential(
 
 var builder = AgentHost.CreateBuilder(args);
 
-// AgentServer makes the queueing decision when Responses services are first registered.
+// AgentServer makes the queueing decision when Responses services are first registered. Steering
+// and crash recovery are separate options; this sample intentionally enables steering only.
 builder.Services.AddFoundryResponses(
     agent,
     configure: options => options.SteerableConversations = true);

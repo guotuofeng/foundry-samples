@@ -32,6 +32,7 @@ This directory contains samples that demonstrate how to use the [Agent Framework
 | 16 | [foundry-toolbox-mcp-skills](foundry-toolbox-mcp-skills/) | An agent that discovers MCP-based skills from a Foundry Toolbox and exposes them to the agent via `AgentSkillsProvider` with progressive disclosure. |
 | 17 | [steering](steering/) | A long-running agent that queues a second input on the same active conversation instead of rejecting it as locked. |
 | 18 | [resilient-workflow](resilient-workflow/) | A model-backed workflow whose Agent Executor calls an intentional crash tool and resumes the pending tool call in a replacement process. |
+| 19 | [steerable-workflow](steerable-workflow/) | A deterministic workflow that queues steering input, cancels an active superstep, and continues from the last committed checkpoint. |
 
 ### Invocations API
 
