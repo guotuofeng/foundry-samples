@@ -31,7 +31,7 @@ This directory contains samples that demonstrate how to use the [Agent Framework
 | 15 | [a2a/01-delegation](a2a/01-delegation/) | Two hosted agents — a math-expert executor exposed over A2A and a concierge caller that delegates to it through a Foundry Toolbox A2A connection. |
 | 16 | [foundry-toolbox-mcp-skills](foundry-toolbox-mcp-skills/) | An agent that discovers MCP-based skills from a Foundry Toolbox and exposes them to the agent via `AgentSkillsProvider` with progressive disclosure. |
 | 17 | [steering](steering/) | A long-running agent that queues a second input on the same active conversation instead of rejecting it as locked. |
-| 18 | [resilient-workflow](resilient-workflow/) | A deterministic workflow that intentionally terminates its hosted process and resumes the pending node in a replacement process. |
+| 18 | [resilient-workflow](resilient-workflow/) | A model-backed workflow whose Agent Executor calls an intentional crash tool and resumes the pending tool call in a replacement process. |
 
 ### Invocations API
 

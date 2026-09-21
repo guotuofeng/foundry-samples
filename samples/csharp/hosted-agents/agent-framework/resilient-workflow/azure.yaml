@@ -8,6 +8,15 @@ name: resilient-workflow
 services:
   ai-project:
     host: azure.ai.project
+    deployments:
+      - name: gpt-5.4-mini
+        model:
+          format: OpenAI
+          name: gpt-5.4-mini
+          version: '2026-03-17'
+        sku:
+          name: GlobalStandard
+          capacity: 10
   resilient-workflow:
     host: azure.ai.agent
     metadata:
@@ -31,14 +40,12 @@ services:
     kind: hosted
     name: resilient-workflow
     displayName: Resilient Background Workflow
-    description: A deterministic long-running workflow that intentionally terminates its hosted process and resumes from a durable checkpoint in the replacement process.
+    description: A model-backed Agent Framework workflow whose agent calls an intentional crash tool and resumes that pending tool call from a durable checkpoint in the replacement process.
     protocols:
       - protocol: responses
         version: 2.0.0
     env:
-      ENABLE_CRASH_RECOVERY_DEMO: ${ENABLE_CRASH_RECOVERY_DEMO=true}
-      LONG_RUNNING_DELAY_SECONDS: ${LONG_RUNNING_DELAY_SECONDS=20}
-      CRASH_DELAY_SECONDS: ${CRASH_DELAY_SECONDS=3}
+      AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
     container:
       resources:
         cpu: '0.5'

@@ -1,38 +1,67 @@
 # What this sample demonstrates
 
-This sample hosts a deterministic Agent Framework workflow with resilient background Responses
-enabled. Its crash mode intentionally terminates the hosted process while a workflow node is
-running. AgentServer starts a replacement process and Agent Framework resumes the pending node from
-the durable workflow checkpoint.
+This sample hosts a model-backed Agent Framework workflow with resilient background Responses
+enabled. The workflow contains an Agent Executor with a declarative `simulate_crash` tool. When the
+agent calls that tool, a second workflow executor intentionally terminates the process. AgentServer
+starts a replacement process and Agent Framework resumes the same pending tool call from the durable
+workflow checkpoint.
 
 > [!WARNING]
-> The `crash` mode deliberately terminates the agent process. Deploy this sample only to a
-> development or test project.
+> This sample deliberately terminates the agent process. Deploy it only to a development or test
+> project.
 
 ## How it works
 
-The workflow contains three executors:
+The workflow contains two executors:
 
-```text
-resilient-input -> resilient-work -> resilient-output
+```mermaid
+flowchart LR
+    Agent[Crash Recovery Agent]
+    Tool[Crash Tool Executor]
+
+    Agent -->|FunctionCallContent: simulate_crash| Tool
+    Tool -->|FunctionResultContent| Agent
 ```
 
-Send one of these inputs:
+The agent receives an `AIFunctionDeclaration`. A declaration describes a tool to the model but has
+no local implementation:
 
-| Input | Behavior |
-| --- | --- |
-| `echo:<token>` | Completes immediately with `ECHO-COMPLETE:<token>`. |
-| `long:<token>` | Waits for `LONG_RUNNING_DELAY_SECONDS`, then returns `LONG-RUN-COMPLETE:<token>`. |
-| `crash:<token>` | Creates a durable crash marker, terminates the process, then returns `CRASH-RECOVERED:<token>:PROCESS-CHANGED` from the replacement process. |
+```csharp
+AIFunctionDeclaration simulateCrash = AIFunctionFactory.CreateDeclaration(
+    name: "simulate_crash",
+    description: "Terminate the current agent process to demonstrate durable workflow recovery.",
+    jsonSchema: JsonSerializer.SerializeToElement(new
+    {
+        type = "object",
+        properties = new { },
+        additionalProperties = false,
+    }));
+```
 
-The crash executor writes a marker beneath
-`$HOME/.foundry-hosted-samples/resilient-workflow/`. The marker contains a random process
-incarnation. On the first execution, the executor writes the marker and calls `Environment.Exit(70)`.
-After AgentServer reclaims the stored background response, the replacement process reloads the
-workflow checkpoint and repeats the pending executor. The executor finds the marker, verifies that
-the process incarnation changed, and completes instead of terminating again.
+The Agent Executor intercepts the unterminated function call and sends it through the workflow:
 
-Use a unique token for every crash test. Reusing a token intentionally reuses its existing marker.
+```csharp
+ExecutorBinding agentExecutor = crashAgent.BindAsExecutor(new AIAgentHostOptions
+{
+    InterceptUnterminatedFunctionCalls = true,
+});
+```
+
+The agent uses a fixed `Id` and `Name`. A replacement process must reconstruct the same executor
+identity for the persisted workflow checkpoint to remain compatible.
+
+At the end of that workflow superstep, the Agent Executor checkpoints its agent session and the
+pending `FunctionCallContent`. The Crash Tool Executor receives the call in the next superstep.
+
+On the first execution, it waits five seconds so hosting can persist the completed Agent Executor
+superstep, then calls `Environment.Exit(70)`. In the replacement process,
+`OnCheckpointRestoredAsync` runs before the pending function call is delivered again. The executor
+then returns a `FunctionResultContent` with the same call ID, and the Agent Executor continues the
+original turn.
+
+No marker file or external application state is used. Run each crash demonstration in a new
+session and conversation so a checkpoint restoration unambiguously belongs to that interrupted
+turn.
 
 Resilience is enabled when the Responses server is first registered:
 
@@ -42,12 +71,11 @@ builder.Services.AddFoundryResponses(
     configure: options => options.ResilientBackground = true);
 ```
 
-Recovery applies only to stored background requests. Use `background=true` with `store=true`, or
-omit `store` so the Responses API default remains enabled.
+Recovery applies only to stored background requests. Use `background=true` with `store=true`.
 
 ## Prerequisites
 
-1. An existing Foundry project. This sample does not require a model deployment.
+1. An existing Foundry project with a deployed model, or create them during Option 1.
 2. [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) or later.
 3. The deployed agent identity needs the **Foundry User** role on the Foundry project so it can write
    durable workflow checkpoints.
@@ -92,7 +120,8 @@ azd ai agent run
 In another terminal, verify the non-destructive path:
 
 ```bash
-azd ai agent invoke --local "echo:LOCAL-READY"
+azd ai agent invoke --local \
+  "Reply briefly and include [LOCAL-READY]. Do not call any tools."
 ```
 
 ### Deploy
@@ -122,8 +151,8 @@ does not continue using a managed identity token acquired before the permission 
 ### Verify the deployed agent
 
 ```bash
-azd ai agent invoke --new-session --new-conversation "echo:DEPLOYED-READY"
-azd ai agent invoke --new-session --new-conversation "long:BACKGROUND-READY"
+azd ai agent invoke --new-session --new-conversation \
+  "Reply briefly and include [DEPLOYED-READY]. Do not call any tools."
 ```
 
 ## Exercise crash recovery
@@ -134,7 +163,6 @@ Run this PowerShell script from the initialized project directory:
 $agent = azd ai agent show resilient-workflow -o json | ConvertFrom-Json
 $endpoint = $agent.agent_endpoints.responses
 $responsesBase = $endpoint.Split("?")[0]
-$token = [Guid]::NewGuid().ToString("N")
 $accessToken = az account get-access-token `
   --resource https://ai.azure.com `
   --query accessToken `
@@ -146,7 +174,7 @@ $headers = @{
 }
 $body = @{
   model = "resilient-workflow"
-  input = "crash:$token"
+  input = "Call simulate_crash to demonstrate crash recovery, then report the result."
   background = $true
   store = $true
   stream = $false
@@ -183,13 +211,10 @@ do {
 $response | ConvertTo-Json -Depth 20
 ```
 
-The initial POST returns before the process terminates. Polling can temporarily time out or return
-`404`, `409`, `424`, or a retryable `5xx` while Foundry starts the replacement process. Continue
-retrieving the same response ID. The final response must be `completed` and contain:
-
-```text
-CRASH-RECOVERED:<token>:PROCESS-CHANGED
-```
+The initial POST returns before the tool terminates the process. Polling can temporarily time out or
+return `404`, `409`, `424`, or a retryable `5xx` while Foundry starts the replacement process.
+Continue retrieving the same response ID. The final response must be `completed` and explain that
+the crash recovery succeeded.
 
 ## Option 2: VS Code (Foundry Toolkit)
 
@@ -203,15 +228,15 @@ CRASH-RECOVERED:<token>:PROCESS-CHANGED
 
 Press **F5**. The agent starts and Agent Inspector opens automatically.
 
-For a manual run, copy `.env.example` to `.env`, then run:
+For a manual run, copy `.env.example` to `.env`, fill in the values, then run:
 
 ```bash
 dotnet restore
 dotnet run
 ```
 
-Use `echo:<token>` or `long:<token>` in Agent Inspector. Use the PowerShell script above for the
-crash demonstration because it preserves the stored response ID while the hosted process restarts.
+Use Agent Inspector for normal prompts. Use the PowerShell script above for the crash demonstration
+because it preserves the stored response ID while the hosted process restarts.
 
 ### Deploy
 
@@ -221,35 +246,35 @@ identity the **Foundry User** role on the project before invoking the workflow.
 
 ## Recovery and side effects
 
-Workflow checkpoints, stored response events, crash markers, and external side effects are not one
-transaction. Recovery can repeat work after the last confirmed checkpoint. A real email, payment,
-queue publication, or write API must accept an idempotency key so repeating a node does not repeat
-the business effect.
-
-The marker in this sample prevents an intentional crash loop. It does not make unrelated external
-operations idempotent.
+Workflow checkpoints, stored response events, and external side effects are not one transaction.
+Recovery can repeat work after the last confirmed checkpoint. A real email, payment, queue
+publication, or write API must accept an idempotency key so repeating a tool executor does not
+repeat the business effect.
 
 ## Troubleshooting
 
-**The response fails after the first executor.** Assign **Foundry User** to the hosted agent managed
+**The response fails before the tool runs.** Assign **Foundry User** to the hosted agent managed
 identity, wait for propagation, and redeploy if the agent was invoked before the role was assigned.
 
-**The crash mode reports that it is disabled.** Set `ENABLE_CRASH_RECOVERY_DEMO=true` and redeploy.
+**The model does not call the tool.** Use the exact crash prompt from this README. The agent
+instructions prohibit calling `simulate_crash` unless the user explicitly requests it.
 
 **The process exits but the response never resumes.** Confirm the request used both
 `background=true` and `store=true`, then keep polling the same response ID rather than submitting the
 input again.
 
-**The process does not terminate for a reused token.** Every token maps to one durable crash marker.
-Generate a unique token for each demonstration.
+**A later crash request completes without terminating the process.** Start every demonstration with
+a new session and conversation. `OnCheckpointRestoredAsync` indicates that the workflow instance was
+restored from a checkpoint; this sample intentionally consumes that signal once.
 
-**Recovery starts the wrong workflow shape.** Keep workflow agent and executor IDs stable across
+**Recovery starts the wrong workflow shape.** Keep the workflow agent and executor IDs stable across
 deployments. Changing them prevents persisted checkpoints from matching the reconstructed workflow.
 
 **The CLI returns no visible assistant text.** Inspect the complete Responses event stream:
 
 ```bash
-azd ai agent invoke --new-session --new-conversation --output raw "echo:DIAGNOSTIC"
+azd ai agent invoke --new-session --new-conversation --output raw \
+  "Reply with [DIAGNOSTIC]. Do not call any tools."
 ```
 
 Check the final `response.completed` or `response.failed` event. The friendly CLI output can be empty

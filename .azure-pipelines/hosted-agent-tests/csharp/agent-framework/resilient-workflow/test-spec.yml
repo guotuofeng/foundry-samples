@@ -7,8 +7,8 @@ sample:
 tests:
   - name: resilient-workflow-response
     turns:
-      - input: echo:RESILIENT-WORKFLOW-OK-731
+      - input: Reply briefly and include the exact marker [RESILIENT-WORKFLOW-OK-731]. Do not call any tools.
         assertions:
           - source: assistant_text
             type: contains
-            value: 'ECHO-COMPLETE:RESILIENT-WORKFLOW-OK-731'
+            value: '[RESILIENT-WORKFLOW-OK-731]'

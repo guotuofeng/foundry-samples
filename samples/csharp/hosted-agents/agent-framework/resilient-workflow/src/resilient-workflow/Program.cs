@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
+using System.Text.Json;
 using Azure.AI.AgentServer.Core;
+using Azure.AI.Projects;
+using Azure.Identity;
 using DotNetEnv;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Foundry.Hosting;
@@ -12,14 +12,54 @@ using Microsoft.Extensions.AI;
 
 Env.NoClobber().TraversePath().Load();
 
-var input = new ResilientInputExecutor();
-var work = new ResilientWorkExecutor();
-var output = new ResilientOutputExecutor();
+var projectEndpoint = new Uri(Environment.GetEnvironmentVariable("FOUNDRY_PROJECT_ENDPOINT")
+    ?? throw new InvalidOperationException("FOUNDRY_PROJECT_ENDPOINT environment variable is not set."));
+var deployment = Environment.GetEnvironmentVariable("AZURE_AI_MODEL_DEPLOYMENT_NAME")
+    ?? throw new InvalidOperationException("AZURE_AI_MODEL_DEPLOYMENT_NAME environment variable is not set.");
 
-AIAgent agent = new WorkflowBuilder(input)
-    .AddEdge(input, work)
-    .AddEdge(work, output)
-    .WithOutputFrom(output)
+AIFunctionDeclaration simulateCrash = AIFunctionFactory.CreateDeclaration(
+    name: "simulate_crash",
+    description: "Terminate the current agent process to demonstrate durable workflow recovery. Call only when the user explicitly requests a crash recovery demonstration.",
+    jsonSchema: JsonSerializer.SerializeToElement(new
+    {
+        type = "object",
+        properties = new { },
+        additionalProperties = false,
+    }));
+
+AIAgent crashAgent = new AIProjectClient(projectEndpoint, new DefaultAzureCredential())
+    .AsAIAgent(new ChatClientAgentOptions
+    {
+        // Recovery reconstructs the workflow in a new process, so executor identity must be stable.
+        Id = "crash-recovery-agent",
+        Name = "Crash Recovery Agent",
+        Description = "An agent that demonstrates workflow recovery after an intentional process crash",
+        ChatOptions = new()
+        {
+            ModelId = deployment,
+            Instructions = """
+                You are a crash recovery demonstration agent.
+                Call simulate_crash exactly once only when the user explicitly asks you to demonstrate
+                crash recovery. After the tool returns, explain briefly that the process was replaced
+                and the workflow resumed from its checkpoint. For any other request, answer normally
+                without calling the tool.
+                """,
+            Tools = [simulateCrash],
+        },
+    });
+
+ExecutorBinding agentExecutor = crashAgent.BindAsExecutor(new AIAgentHostOptions
+{
+    EmitAgentUpdateEvents = true,
+    EmitAgentResponseEvents = true,
+    InterceptUnterminatedFunctionCalls = true,
+});
+var crashToolExecutor = new CrashToolExecutor();
+
+AIAgent agent = new WorkflowBuilder(agentExecutor)
+    .AddEdge(agentExecutor, crashToolExecutor)
+    .AddEdge(crashToolExecutor, agentExecutor)
+    .WithOutputFrom(agentExecutor)
     .Build()
     .AsAIAgent(
         id: "resilient-workflow",
@@ -38,172 +78,47 @@ builder.RegisterProtocol("responses", endpoints => endpoints.MapFoundryResponses
 var app = builder.Build();
 app.Run();
 
-internal sealed class ResilientInputExecutor()
-    : ChatProtocolExecutor("resilient-input", new() { AutoSendTurnToken = false })
+[SendsMessage(typeof(FunctionResultContent))]
+internal sealed class CrashToolExecutor()
+    : Executor<FunctionCallContent>("simulate-crash-tool")
 {
-    protected override ProtocolBuilder ConfigureProtocol(ProtocolBuilder protocolBuilder) =>
-        base.ConfigureProtocol(protocolBuilder).SendsMessage<string>();
+    private bool _restoredFromCheckpoint;
 
-    protected override ValueTask TakeTurnAsync(
-        List<ChatMessage> messages,
-        IWorkflowContext context,
-        bool? emitEvents,
-        CancellationToken cancellationToken = default)
-    {
-        string request = messages.LastOrDefault()?.Text
-            ?? throw new InvalidOperationException("The resilient workflow requires an input message.");
-        return context.SendMessageAsync(request, cancellationToken: cancellationToken);
-    }
-}
-
-internal sealed class ResilientWorkExecutor()
-    : Executor<string, string>("resilient-work")
-{
-    private static readonly string s_processIncarnation = Guid.NewGuid().ToString("N");
-
-    public override async ValueTask<string> HandleAsync(
-        string message,
+    public override async ValueTask HandleAsync(
+        FunctionCallContent message,
         IWorkflowContext context,
         CancellationToken cancellationToken = default)
     {
-        string[] parts = message.Split(':', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[1]))
-        {
-            throw new InvalidOperationException("Expected '<mode>:<token>'.");
-        }
-
-        string mode = parts[0];
-        string token = parts[1];
-
-        if (string.Equals(mode, "echo", StringComparison.Ordinal))
-        {
-            return $"ECHO-COMPLETE:{token}";
-        }
-
-        if (string.Equals(mode, "long", StringComparison.Ordinal))
-        {
-            await Task.Delay(
-                TimeSpan.FromSeconds(GetLongRunningDelaySeconds()),
-                cancellationToken).ConfigureAwait(false);
-            return $"LONG-RUN-COMPLETE:{token}";
-        }
-
-        if (string.Equals(mode, "crash", StringComparison.Ordinal))
-        {
-            EnsureCrashDemoEnabled();
-
-            if (TryCreateCrashMarker(token, out string crashedProcessIncarnation))
-            {
-                await Task.Delay(
-                    TimeSpan.FromSeconds(GetCrashDelaySeconds()),
-                    cancellationToken).ConfigureAwait(false);
-                Console.Out.Flush();
-                Console.Error.Flush();
-                Environment.Exit(70);
-                throw new InvalidOperationException("Process termination did not stop execution.");
-            }
-
-            // A persisted marker created by this incarnation would mean the process never restarted.
-            if (string.Equals(
-                crashedProcessIncarnation,
-                s_processIncarnation,
-                StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    "The crash recovery stage resumed in the original process.");
-            }
-
-            return $"CRASH-RECOVERED:{token}:PROCESS-CHANGED";
-        }
-
-        throw new InvalidOperationException(
-            $"Unknown mode '{mode}'. Expected echo, long, or crash.");
-    }
-
-    private static void EnsureCrashDemoEnabled()
-    {
-        string? value = Environment.GetEnvironmentVariable("ENABLE_CRASH_RECOVERY_DEMO");
-        if (!string.Equals(value, "true", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(message.Name, "simulate_crash", StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "Crash recovery is disabled. Set ENABLE_CRASH_RECOVERY_DEMO=true to enable it.");
+                $"Unexpected function call '{message.Name}'.");
         }
-    }
 
-    private static int GetLongRunningDelaySeconds() =>
-        ReadNonNegativeInteger("LONG_RUNNING_DELAY_SECONDS", defaultValue: 20);
-
-    private static int GetCrashDelaySeconds() =>
-        ReadNonNegativeInteger("CRASH_DELAY_SECONDS", defaultValue: 3);
-
-    private static int ReadNonNegativeInteger(string name, int defaultValue)
-    {
-        string? value = Environment.GetEnvironmentVariable(name);
-        return int.TryParse(
-            value,
-            NumberStyles.None,
-            CultureInfo.InvariantCulture,
-            out int parsed)
-            && parsed >= 0
-                ? parsed
-                : defaultValue;
-    }
-
-    private static bool TryCreateCrashMarker(
-        string token,
-        out string crashedProcessIncarnation)
-    {
-        string home = Environment.GetEnvironmentVariable("HOME")
-            ?? throw new InvalidOperationException("HOME is not set.");
-        string markerDirectory = Path.Combine(
-            home,
-            ".foundry-hosted-samples",
-            "resilient-workflow");
-        Directory.CreateDirectory(markerDirectory);
-
-        // Hash untrusted input before using it as a file name.
-        string markerName =
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))
-            + ".crashed";
-        string markerPath = Path.Combine(markerDirectory, markerName);
-
-        try
+        if (!this._restoredFromCheckpoint)
         {
-            using FileStream marker = new(
-                markerPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 1,
-                FileOptions.WriteThrough);
-            byte[] incarnation = Encoding.UTF8.GetBytes(s_processIncarnation);
-            marker.Write(incarnation);
-            marker.Flush(flushToDisk: true);
-            crashedProcessIncarnation = s_processIncarnation;
-            return true;
+            // Let hosting persist the completed Agent Executor superstep before terminating.
+            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Environment.Exit(70);
+            throw new InvalidOperationException("Process termination did not stop execution.");
         }
-        catch (IOException) when (File.Exists(markerPath))
-        {
-            crashedProcessIncarnation =
-                File.ReadAllText(markerPath, Encoding.UTF8).Trim();
-            if (string.IsNullOrWhiteSpace(crashedProcessIncarnation))
-            {
-                throw new InvalidOperationException(
-                    "The crash marker does not contain a process incarnation.");
-            }
 
-            return false;
-        }
+        // Consume the restore signal so another call in this process does not masquerade as recovery.
+        this._restoredFromCheckpoint = false;
+        await context.SendMessageAsync(
+            new FunctionResultContent(
+                message.CallId,
+                "Crash recovery succeeded. The workflow resumed the pending tool call from its checkpoint."),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
-}
 
-[YieldsOutput(typeof(string))]
-internal sealed class ResilientOutputExecutor()
-    : Executor<string>("resilient-output")
-{
-    public override ValueTask HandleAsync(
-        string message,
+    protected override ValueTask OnCheckpointRestoredAsync(
         IWorkflowContext context,
-        CancellationToken cancellationToken = default) =>
-        context.YieldOutputAsync(message, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        this._restoredFromCheckpoint = true;
+        return ValueTask.CompletedTask;
+    }
 }

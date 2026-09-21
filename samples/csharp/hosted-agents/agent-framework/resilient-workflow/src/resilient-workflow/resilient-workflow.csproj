@@ -12,6 +12,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.22.0-preview.260918.1" />
     <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="1.22.0" />
+    <PackageReference Include="Azure.AI.Projects" Version="3.0.0-beta.2" />
     <PackageReference Include="DotNetEnv" Version="3.2.0" />
   </ItemGroup>
 
