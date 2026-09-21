@@ -6,7 +6,6 @@
     <AssemblyName>steering</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <NoWarn>$(NoWarn);NU1903;NU1605</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
