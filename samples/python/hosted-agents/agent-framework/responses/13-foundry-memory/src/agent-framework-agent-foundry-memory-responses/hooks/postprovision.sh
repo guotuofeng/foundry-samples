@@ -25,10 +25,8 @@ if [ -z "$MEMORY_STORE_NAME" ]; then
 fi
 
 echo "Provisioning the Foundry Memory Store '$MEMORY_STORE_NAME'..."
-# Install only the imports used by the provisioning script.
-python -m pip install -q azure-ai-projects azure-identity aiohttp python-dotenv
 # Idempotent: an existing store with the same name is left untouched.
-python provision_memory_store.py
+uv run --frozen --group provisioning python provision_memory_store.py
 
 # Ensure agent.yaml receives the name if init resolved it before this
 # hook ran.

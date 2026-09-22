@@ -5,7 +5,7 @@ header transforms (Insert, Set, Remove), host/path rewrites, and baseline
 connectivity.
 
 Run with:
-    pytest scenarios/scenario_basic.py -v --tb=short
+    uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_basic.py -v --tb=short
 
 See conftest.py for required environment variables.
 """

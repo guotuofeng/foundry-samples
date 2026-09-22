@@ -11,7 +11,7 @@ These scenarios validate that:
   - Audit vs Enforced produce different outcomes for the same deny rule (Test 15)
 
 Run with:
-    pytest scenarios/scenario_audit.py -v --tb=short
+    uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_audit.py -v --tb=short
 
 See conftest.py for required environment variables.
 """

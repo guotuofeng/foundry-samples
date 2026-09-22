@@ -1,0 +1,17 @@
+[project]
+name = "browser-automation-python-maf"
+version = "0.1.0"
+description = "A Microsoft Foundry hosted agent built with Microsoft Agent Framework."
+requires-python = ">=3.13"
+dependencies = [
+    "agent-framework-core>=1.11.0",
+    "agent-framework-foundry>=1.10.0",
+    "agent-framework-foundry-hosting>=1.0.0b260813",
+    "azure-core",
+    "azure-identity>=1.19.0",
+    "debugpy",
+    "httpx",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "websockets>=14.0",
+]

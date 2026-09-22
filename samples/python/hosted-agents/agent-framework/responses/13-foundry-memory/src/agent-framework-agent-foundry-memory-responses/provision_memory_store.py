@@ -10,7 +10,7 @@ store with the same name already exists, the script leaves it alone.
 
 Usage (from this directory, with the venv activated and ``az login`` done):
 
-    python provision_memory_store.py
+    uv run --frozen --group provisioning python provision_memory_store.py
 
 Required env vars (also read from a local ``.env`` file if present):
 

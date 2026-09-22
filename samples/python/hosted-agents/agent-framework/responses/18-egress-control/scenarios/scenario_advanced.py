@@ -4,7 +4,7 @@ These scenarios validate edge cases and rule interactions: first-match semantics
 multiple transforms, combined rewrite+transform, deny-all, and wildcard matching.
 
 Run with:
-    pytest scenarios/scenario_advanced.py -v --tb=short
+    uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_advanced.py -v --tb=short
 
 See conftest.py for required environment variables.
 """

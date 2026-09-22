@@ -6,7 +6,7 @@ Runnable end-to-end **example scenarios** (not unit tests) that deploy egress po
 
 - **Deployed agent** — the egress test agent must be deployed to a Foundry project
 - **Azure CLI** — `az login` with access to the CogSvc account
-- **Python 3.10+** with `pytest` installed
+- **Python 3.13+** with [uv](https://docs.astral.sh/uv/) 0.11.7 installed
 
 ## Environment variables
 
@@ -31,27 +31,24 @@ export AGENT_NAME="egress-test-af"
 export COGSVC_ACCOUNT_ID="/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>"
 export AGENT_IMAGE="myregistry.azurecr.io/egress-test-agent-framework@sha256:..."
 
-# Install pytest
-pip install pytest
-
 # Run basic scenarios (scenarios 1–7)
-pytest scenarios/scenario_basic.py -v --tb=short
+uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_basic.py -v --tb=short
 
 # Run advanced scenarios (scenarios 8–12)
-pytest scenarios/scenario_advanced.py -v --tb=short
+uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_advanced.py -v --tb=short
 
 # Run audit mode scenarios (scenarios 13–15)
-pytest scenarios/scenario_audit.py -v --tb=short
+uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_audit.py -v --tb=short
 
 # Run ManagedIdentityRef scenarios (scenarios 16–17).
 # Deploy the agent first, grant Storage Blob Data Contributor to the principal
 # returned by `azd ai agent show --output json | jq -r
 # '.instance_identity.principal_id'`, then set AGENT_STORAGE_ACCOUNT.
 export AGENT_STORAGE_ACCOUNT="myteststorage"
-pytest scenarios/scenario_managed_identity.py -v --tb=short
+uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_managed_identity.py -v --tb=short
 
 # Run all scenarios
-pytest scenarios/ -v --tb=short
+uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/ -v --tb=short
 ```
 
 ## Execution time

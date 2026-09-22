@@ -29,7 +29,7 @@ Setup:
       --scope "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Storage/storageAccounts/<name>"
 
 Run with:
-    pytest scenarios/scenario_managed_identity.py -v --tb=short
+    uv run --project src/agent-framework-egress-control-responses --frozen --group test pytest scenarios/scenario_managed_identity.py -v --tb=short
 
 See conftest.py for required environment variables.
 """

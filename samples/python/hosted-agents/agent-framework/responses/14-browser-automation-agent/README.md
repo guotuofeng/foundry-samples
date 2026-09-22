@@ -42,7 +42,7 @@ See [main.py](src/browser-automation-python-maf-sample-foundry/main.py) for the 
 | `utils/` | Agent construction (`agent_factory.py`), tools, settings, logging, and path helpers. |
 | `prompts/base.md` | Browser lifecycle, safety, cleanup, web extraction, and form-filling rules. |
 | `skills/azure-playwright-browser-automation/SKILL.md` | Playwright CLI operational reference for remote Azure Playwright Service sessions. |
-| `requirements.txt` | Python dependencies (agent-framework, azure-identity, etc.). |
+| `pyproject.toml` and `uv.lock` | Python dependencies and reproducible lock file. |
 | `docs/sample-structure.md` | Design notes explaining the sample structure and extension points. |
 
 ## Prerequisites
@@ -50,7 +50,7 @@ See [main.py](src/browser-automation-python-maf-sample-foundry/main.py) for the 
 - An Azure AI Foundry project with a deployed chat model (e.g., `gpt-4.1`).
 - Azure CLI installed and authenticated (`az login`).
 - Docker, if you want to build the container locally.
-- Python 3.11 or later and `uv` (or `pip`) for local development.
+- Python 3.13 or later, [pipx](https://pipx.pypa.io/stable/installation/), and Node.js 22 for local development.
 
 For hosted-agent setup, see [Deploy hosted agents with azd](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?pivots=azd).
 
@@ -96,15 +96,11 @@ The Toolbox endpoint is resolved as `<FOUNDRY_PROJECT_ENDPOINT>/toolboxes/browse
 Install dependencies and run the hosted-agent server locally:
 
 ```bash
-pip install -r requirements.txt
-python main.py
-```
-
-Or using `uv`:
-
-```bash
-uv pip install -r requirements.txt
-uv run main.py
+pipx install uv==0.11.7
+uv sync --frozen --python 3.13
+npm install -g @playwright/cli@latest
+playwright-cli install --skills
+uv run --no-sync python main.py
 ```
 
 ## Interacting with the agent
@@ -152,17 +148,13 @@ curl -X POST http://localhost:8088/responses \
 
 **Set up the Python virtual environment**
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Install dependencies in the virtual environment:
+- Install uv outside the project environment, then let uv create and synchronize the locked environment:
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install -r requirements.txt
-
-  # or pure pip
-  pip install -r requirements.txt
+  pipx install uv==0.11.7
+  uv sync --frozen --python 3.13
   ```
+- Open the Command Palette (`Ctrl+Shift+P`), run **Python: Select Interpreter**, and select the `.venv` created by uv.
 
 **Run and debug the agent**
 
@@ -171,7 +163,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 **Or run manually, then open the Inspector**
 
 1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. Start the agent: `uv run --no-sync python main.py` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**.
 
 Type the following in the Inspector:

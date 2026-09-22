@@ -1,0 +1,20 @@
+[project]
+name = "agent-framework-agent-foundry-memory-responses"
+version = "0.1.0"
+description = "A Microsoft Foundry hosted agent built with Microsoft Agent Framework."
+requires-python = ">=3.13"
+dependencies = [
+    "agent-framework-foundry",
+    "agent-framework-foundry-hosting>=1.0.0b260813",
+    "azure-identity",
+    "debugpy",
+    "python-dotenv",
+]
+
+[dependency-groups]
+provisioning = [
+    "aiohttp",
+    "azure-ai-projects",
+    "httpx<1",
+    "openai<3",
+]

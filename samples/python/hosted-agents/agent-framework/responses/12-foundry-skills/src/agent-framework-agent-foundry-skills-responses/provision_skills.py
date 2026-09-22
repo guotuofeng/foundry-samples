@@ -12,7 +12,7 @@ so the script is safe to re-run after editing a ``SKILL.md`` file.
 
 Usage (from this directory, with the venv activated and ``az login`` done):
 
-    python provision_skills.py
+    uv run --frozen python provision_skills.py
 
 Required env vars (also read from a local ``.env`` file if present):
 
