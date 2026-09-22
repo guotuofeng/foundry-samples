@@ -1,0 +1,14 @@
+version: 1
+
+sample:
+  owner: aochengwang
+  experiences: [azd, vscode]
+
+tests:
+  - name: custom-host-smoke
+    turns:
+      - input: Reply with exactly LOCATION-AWARE-READY.
+        assertions:
+          - source: assistant_text
+            type: contains
+            value: LOCATION-AWARE-READY

@@ -1,0 +1,721 @@
+# Hosted Agents Cloud E2E (Live-service validation)
+#
+# Uses the Azure Developer CLI (azd) to deploy hosted-agent samples and
+# validate the full lifecycle against real Azure resources.
+#
+# Covers Loop scenarios: S01 (Init/Scaffold), S02 (Deploy), S04 (Remote Invoke),
+# S05 (Status), S06 (Logs/Monitoring).
+#
+# Discovery, deploy, invoke and assertion behavior uses repository-local
+# helpers; authentication, matrices, artifacts and annotations are ADO-native.
+# Operators must disable fork builds and restrict/approve the service
+# connection outside YAML before enabling this credentialed pipeline.
+#
+# Infrastructure modes:
+#   - SKIP_PROVISION=true (default): uses an existing Foundry project. Requires
+#     AZURE_AI_PROJECT_ENDPOINT, AZURE_RESOURCE_GROUP, AZURE_AI_ACCOUNT_NAME,
+#     AZURE_AI_PROJECT_NAME, AZURE_CONTAINER_REGISTRY_ENDPOINT.
+#   - SKIP_PROVISION=false: azd provision creates all resources from scratch.
+#
+# Teardown: infrastructure teardown only runs when SKIP_PROVISION=false.
+# Cell-owned temporary toolboxes are always deleted after validation; stale CI
+# toolboxes are reclaimed at the beginning of a later run.
+
+trigger:
+  # GitHub gated this workflow with `concurrency: group: ...-${{ github.ref }}`.
+  # Azure Pipelines has no direct equivalent; `batch` is the closest for CI runs,
+  # collapsing pushes that arrive while a run is in flight into a single build so
+  # two full matrices never race over shared toolboxes and Foundry capacity.
+  batch: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - samples/python/hosted-agents/**
+      - samples/csharp/hosted-agents/**
+      - .azure-pipelines/hosted-agents-samples-ci.yml
+      - .azure-pipelines/scripts/hosted-agents/**
+      - .azure-pipelines/scripts/hosted-agent-samples-ci-skiplist
+      - .azure-pipelines/scripts/hosted-agent-samples-code-ci-skiplist
+      - .azure-pipelines/hosted-agent-tests/**
+      - .github/scripts/hosted_agent_fixture.py
+      - .github/scripts/hosted_agent_test_spec.py
+
+pr:
+  # Matches the workflow's `cancel-in-progress: github.event_name == 'pull_request'`.
+  # This is the ADO default, stated explicitly so it survives future edits.
+  autoCancel: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - samples/python/hosted-agents/**
+      - samples/csharp/hosted-agents/**
+      - .azure-pipelines/hosted-agents-samples-ci.yml
+      - .azure-pipelines/scripts/hosted-agents/**
+      - .azure-pipelines/scripts/hosted-agent-samples-ci-skiplist
+      - .azure-pipelines/scripts/hosted-agent-samples-code-ci-skiplist
+      - .azure-pipelines/hosted-agent-tests/**
+      - .github/scripts/hosted_agent_fixture.py
+      - .github/scripts/hosted_agent_test_spec.py
+
+schedules:
+  # Daily regression run at 09:00 UTC against main. Catches platform-side
+  # regressions even when no code changes are made.
+  - cron: '0 9 * * *'
+    displayName: Daily hosted-agent cloud E2E
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: sampleFilter
+    displayName: Sample name or path (* for all; comma-separate multiple)
+    type: string
+    default: '*'
+  - name: shards
+    displayName: Languages to test
+    type: object
+    default:
+      - python
+      - csharp
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: samples-hosted-agents-ci
+  - name: AZURE_LOCATION
+    value: northcentralus
+  - name: AZURE_DEV_COLLECT_TELEMETRY
+    value: 'no'
+
+stages:
+  # ── Discover all samples ────────────────────────────────────────────
+  # Runs unless the kill-switch is explicitly set to 'false'. It is deliberately
+  # not gated on `eq(..., 'true')`: an unset variable would then skip every
+  # stage and report a false pass. Missing configuration fails in the guard
+  # step below instead. PRs also require an explicitly non-fork source; missing
+  # fork metadata fails closed. This guard is not a service-connection approval.
+  - stage: Discover
+    displayName: Discover Samples
+    condition: |
+      and(
+        ne(variables['CLOUD_E2E_ENABLED'], 'false'),
+        or(
+          ne(variables['Build.Reason'], 'PullRequest'),
+          eq(variables['System.PullRequest.IsFork'], 'False')
+        )
+      )
+    jobs:
+      - job: DiscoverSamples
+        displayName: Build sample matrix
+        steps:
+          - checkout: self
+            fetchDepth: 0 # Needed to diff PRs
+            persistCredentials: true
+
+          # ── Guard: fail loudly when the pipeline is not configured ──
+          # These came from GitHub repo variables and must now live in the
+          # samples-hosted-agents-ci variable group. An unlinked group
+          # leaves every macro expanding to its own literal name, which would
+          # otherwise surface as a pipeline that quietly validates nothing.
+          #
+          # CLOUD_E2E_ENABLED is deliberately NOT required: unset means enabled,
+          # matching this stage's condition. It only exists as a kill-switch,
+          # and Azure Pipelines can also disable the pipeline outright from its
+          # settings.
+          - bash: |
+              set -euo pipefail
+              is_unset() { [ -z "${1:-}" ] || [[ "$1" == \$\(*\) ]]; }
+              missing=()
+              for var in AZURE_SERVICE_CONNECTION AZURE_SUBSCRIPTION_ID \
+                         AZURE_RESOURCE_GROUP AZURE_AI_PROJECT_ID AZURE_AI_PROJECT_ENDPOINT; do
+                eval "val=\${$var:-}"
+                is_unset "$val" && missing+=("$var")
+              done
+              if [ ${#missing[@]} -gt 0 ]; then
+                echo "##vso[task.logissue type=error]Hosted-agent cloud E2E is not configured: ${missing[*]} unset."
+                echo "Add them to the 'samples-hosted-agents-ci' variable group and link it to this pipeline."
+                echo "To intentionally disable this pipeline instead, set CLOUD_E2E_ENABLED=false."
+                exit 1
+              fi
+              echo "Cloud E2E configuration present."
+            displayName: Verify pipeline configuration
+            env:
+              AZURE_SERVICE_CONNECTION: $(AZURE_SERVICE_CONNECTION)
+              AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+              AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
+              AZURE_AI_PROJECT_ID: $(AZURE_AI_PROJECT_ID)
+              AZURE_AI_PROJECT_ENDPOINT: $(AZURE_AI_PROJECT_ENDPOINT)
+
+          - bash: |
+              set -euo pipefail
+              sudo curl -fsSL -o /usr/local/bin/yq \
+                https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+              sudo chmod +x /usr/local/bin/yq
+              yq --version
+              python3 -m pip install --disable-pip-version-check --quiet "PyYAML==6.0.2"
+            displayName: Install yq and test-spec dependency
+
+          - bash: |
+              set -euo pipefail
+              python3 -m unittest discover -s .azure-pipelines/scripts/hosted-agents/tests -p 'test_*.py'
+              while IFS= read -r fixture; do
+                sample_dir=$(python3 .github/scripts/hosted_agent_fixture.py sample-dir --fixture "$fixture")
+                manifest="$sample_dir/azure.yaml"
+                if [ ! -f "$manifest" ]; then
+                  echo "##vso[task.logissue type=error;sourcepath=$fixture]Hosted-agent fixture does not map to a sample with azure.yaml: $sample_dir"
+                  exit 1
+                fi
+                if [ "$(basename "$fixture")" = "test-spec.yml" ]; then
+                  if [ "$(yq '[.services[] | select(.host == "azure.ai.agent") | .protocols[]?.protocol] | any_c(. == "invocations")' "$manifest")" = "true" ]; then
+                    protocol="invocations"
+                  else
+                    protocol="responses"
+                  fi
+                  python3 .github/scripts/hosted_agent_test_spec.py validate --spec "$fixture"
+                  python3 .github/scripts/hosted_agent_test_spec.py plan \
+                    --spec "$fixture" --protocol "$protocol" \
+                    --output /tmp/hosted-agent-test-spec-plan.json
+                fi
+              done < <(find .azure-pipelines/hosted-agent-tests -type f \
+                \( -name test-spec.yml -o -name test-payload.txt \) | sort)
+              if find .azure-pipelines/hosted-agent-tests -name test-assertions.yml -type f | grep -q .; then
+                echo "##vso[task.logissue type=error]Legacy test-assertions.yml files must be migrated to test-spec.yml"
+                exit 1
+              fi
+            displayName: Test and validate hosted-agent test specs
+
+          - bash: .azure-pipelines/scripts/hosted-agents/tests/test-hosted-agent-ci-toolboxes.sh
+            displayName: Test hosted-agent CI toolbox lifecycle scripts
+
+          - bash: .azure-pipelines/scripts/hosted-agents/tests/test-hosted-agent-session-quota.sh
+            displayName: Test hosted-agent session quota helpers
+
+          - bash: |
+              set -euo pipefail
+              # Each sample carries a single unified azure.yaml (the project
+              # manifest) at its root, plus its agent source under src/<agent>/.
+              echo "Checking all samples have azure.yaml with a matching src/<agent> directory..."
+              errors=()
+              while IFS= read -r f; do
+                dir=$(dirname "$f")
+                # Derive the agent service's source path from the azure.ai.agent
+                # service's `project:` field (yq parses the YAML structurally).
+                proj=$(yq '(.services[] | select(.host == "azure.ai.agent") | .project) // ""' "$f")
+                if [ -z "$proj" ]; then
+                  errors+=("$dir: azure.yaml has no 'project: src/<agent>' entry")
+                elif [ ! -d "$dir/$proj" ]; then
+                  errors+=("$dir: missing source directory '$proj'")
+                fi
+              done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "azure.yaml" -type f 2>/dev/null | sort)
+              # Deduplicate and report as warnings (enforced per matrix job)
+              if [ ${#errors[@]} -gt 0 ]; then
+                printf '%s\n' "${errors[@]}" | sort -u | while read -r err; do
+                  echo "##vso[task.logissue type=warning]$err"
+                done
+              else
+                echo "All samples have azure.yaml with a matching src/<agent> directory"
+              fi
+            displayName: Validate sample structure
+
+          - bash: |
+              set -euo pipefail
+              chmod +x .azure-pipelines/scripts/hosted-agents/discover-samples.sh
+
+              if [ "$BUILD_REASON" = "PullRequest" ]; then
+                target_branch="${PR_TARGET_BRANCH:?Missing pull request target branch.}"
+                target_branch="${target_branch#refs/heads/}"
+                git fetch origin "$target_branch"
+                export DISCOVERY_MODE="changed"
+                export BASE_REF="origin/$target_branch"
+              else
+                export DISCOVERY_MODE="all"
+                export BASE_REF="origin/main"
+              fi
+              echo "Discovery mode: $DISCOVERY_MODE (base $BASE_REF)"
+
+              mkdir -p "$ARTIFACT_STAGING/matrix"
+              .azure-pipelines/scripts/hosted-agents/discover-samples.sh \
+                > "$ARTIFACT_STAGING/matrix/discovery.json"
+
+              jq '{count, count_python, count_csharp}' "$ARTIFACT_STAGING/matrix/discovery.json"
+              jq -c '.entries' "$ARTIFACT_STAGING/matrix/discovery.json" \
+                > "$ARTIFACT_STAGING/matrix/entries.json"
+
+              # Published as output variables so the sharded stages can gate on a
+              # count and bind their matrix. Names are <kind>_<language> so the
+              # each-shard loop further down can compose them.
+              #
+              # NOTE: never write a literal dollar-brace-brace sequence anywhere
+              # in an inline script, including comments. Azure Pipelines parses
+              # template expressions inside block scalars too, so it would try to
+              # evaluate the comment and fail the whole file at compile time.
+              for var in count count_python count_csharp; do
+                value="$(jq -r ".$var" "$ARTIFACT_STAGING/matrix/discovery.json")"
+                echo "##vso[task.setvariable variable=$var;isOutput=true]$value"
+                echo "$var=$value"
+              done
+              for var in matrix_all matrix_python matrix_csharp; do
+                echo "##vso[task.setvariable variable=$var;isOutput=true]$(jq -c ".$var" "$ARTIFACT_STAGING/matrix/discovery.json")"
+              done
+            name: discover
+            displayName: Find samples to test
+            env:
+              BUILD_REASON: $(Build.Reason)
+              PR_TARGET_BRANCH: $(System.PullRequest.TargetBranch)
+              ARTIFACT_STAGING: $(Build.ArtifactStagingDirectory)
+              SAMPLE_FILTER: ${{ parameters.sampleFilter }}
+              TOOLBOX_ENDPOINT_LIST: $(TOOLBOX_ENDPOINT_NCUS)
+              CODE_DEPLOY_ENABLED: $(CLOUD_E2E_CODE_DEPLOY_ENABLED)
+
+          - publish: $(Build.ArtifactStagingDirectory)/matrix
+            artifact: HostedAgentSamplesMatrix
+            displayName: Publish sample matrix
+
+  # ── Reclaim toolboxes leaked by interrupted runs ────────────────────
+  - stage: CleanupOrphanedToolboxes
+    displayName: Cleanup Orphaned Toolboxes
+    dependsOn: Discover
+    condition: and(succeeded(), ne(dependencies.Discover.outputs['DiscoverSamples.discover.count'], '0'))
+    jobs:
+      - job: CleanupOrphans
+        displayName: Delete CI toolboxes older than 24 hours
+        # Safety net for hard cancellation / agent loss. Per-cell cleanup remains
+        # strict; a transient janitor failure is visible but must not turn every
+        # otherwise-independent matrix cell into a skipped result.
+        continueOnError: true
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - bash: |
+              set -euo pipefail
+              curl -fsSL https://aka.ms/install-azd.sh | bash
+              azd ext install microsoft.foundry
+              azd config set auth.useAzCliAuth true
+            displayName: Install azd and Foundry extension
+
+          # Toolbox data-plane commands are scoped by --project-endpoint and use
+          # the tenant token, so this connection can clean CI projects in either
+          # subscription when the service principal has project RBAC.
+          - task: AzureCLI@2
+            displayName: Delete CI toolboxes older than 24 hours
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              visibleAzLogin: false
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -uo pipefail
+                unset_macro() { [[ "${1:-}" == \$\(*\) ]]; }
+                mkdir -p /tmp/toolbox-orphan-cleanup
+                failed=0
+                index=0
+                declare -A seen=()
+                for endpoint in "$DEFAULT_PROJECT_ENDPOINT" "$TOOLBOX_PROJECT_ENDPOINT" "$TOOLBOX_PROJECT_ENDPOINT_WESTUS2"; do
+                  [ -n "$endpoint" ] || continue
+                  unset_macro "$endpoint" && continue
+                  [ -z "${seen[$endpoint]:-}" ] || continue
+                  seen[$endpoint]=1
+                  index=$((index + 1))
+                  if ! "$REPO_ROOT/.azure-pipelines/scripts/hosted-agents/scripts/cleanup-hosted-agent-ci-toolboxes.sh" \
+                    orphans "$endpoint" 86400 "/tmp/toolbox-orphan-cleanup/project-${index}.json"; then
+                    failed=1
+                  fi
+                done
+                cp -a /tmp/toolbox-orphan-cleanup "$ARTIFACT_STAGING/" 2>/dev/null || true
+                exit "$failed"
+            env:
+              REPO_ROOT: $(Build.SourcesDirectory)
+              ARTIFACT_STAGING: $(Build.ArtifactStagingDirectory)
+              DEFAULT_PROJECT_ENDPOINT: $(AZURE_AI_PROJECT_ENDPOINT)
+              TOOLBOX_PROJECT_ENDPOINT: $(TOOLBOX_PROJECT_ENDPOINT)
+              TOOLBOX_PROJECT_ENDPOINT_WESTUS2: $(TOOLBOX_PROJECT_ENDPOINT_WESTUS2)
+
+          - publish: $(Build.ArtifactStagingDirectory)/toolbox-orphan-cleanup
+            artifact: cloud-e2e-toolbox-orphan-cleanup
+            displayName: Upload orphan-cleanup results
+            condition: always()
+            continueOnError: true
+
+  # ── Run E2E tests, sharded by language ────────────────────
+  # Azure Pipelines caps a single job matrix at 256 jobs; the combined
+  # python+csharp matrix (code+container x toolbox combos) exceeds that, so
+  # each language shard gets its own stage and its own matrix (each < 256).
+  # The job body below is written once and expanded per shard at compile time.
+  - ${{ each shard in parameters.shards }}:
+    - stage: CloudE2E_${{ shard }}
+      displayName: Cloud E2E (${{ shard }})
+      dependsOn:
+        - Discover
+        - CleanupOrphanedToolboxes
+      condition: |
+        and(
+          succeeded('Discover'),
+          ne(dependencies.Discover.outputs['DiscoverSamples.discover.count_${{ shard }}'], '0')
+        )
+      jobs:
+        - job: CloudE2E
+          displayName: Sample
+          timeoutInMinutes: 120
+          # Status, evidence and cleanup have 29 minutes of task budgets;
+          # allow time for authentication and artifact publication on cancel.
+          cancelTimeoutInMinutes: 35
+          strategy:
+            # No maxParallel: every discovered combo runs as soon as an agent is
+            # free, bounded only by the org's parallel-job capacity.
+            #
+            # These jobs all drive one model deployment, so heavy concurrency
+            # does provoke "Model deployment rate limit exceeded". That is
+            # absorbed by the throttle backoff in the invoke loop
+            # (hosted_agent_is_model_throttle_error -> 3 retries, 60s doubling,
+            # Retry-After aware). Re-introduce a cap here if those retries start
+            # being exhausted.
+            matrix: $[ stageDependencies.Discover.DiscoverSamples.outputs['discover.matrix_${{ shard }}'] ]
+          variables:
+            # Cell-owned lifecycle state. Toolboxes declared in azure.yaml are
+            # renamed into the reserved ci-e2e-tb-* namespace before deployment
+            # and deleted after all invoke/monitor checks finish.
+            CI_TOOLBOX_STATE_FILE: /tmp/ci-toolboxes-$(comboId).json
+            CI_TOOLBOX_DEPLOY_RESULT: /tmp/ci-toolbox-deploy-$(comboId).json
+            CI_TOOLBOX_CLEANUP_RESULT: /tmp/ci-toolbox-cleanup-$(comboId).json
+            # One caller-owned session per cell, unique across shards, runs and
+            # reruns.
+            CI_AGENT_SESSION_ID: ado-ci-$(Build.BuildId)-$(System.JobAttempt)-${{ shard }}-$(System.JobPositionInPhase)
+            HOSTED_AGENT_QUOTA_MAX_RETRIES: 5
+            WORK_DIR: /tmp/ci-$(comboId)
+          # Keep large bodies outside the expanded plan. Native steps retain
+          # auth, failure and reporting boundaries; the runner only sequences
+          # operations within each named phase.
+          steps:
+            - checkout: self
+              fetchDepth: 1
+            - download: current
+              artifact: HostedAgentSamplesMatrix
+              displayName: Download sample matrix
+            - bash: bash .azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh hydrate
+              displayName: Hydrate combo record
+              env:
+                COMBO_ID: $(comboId)
+                PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+            - bash: bash .azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh prepare
+              displayName: Prepare tools, configuration and agent names
+              env:
+                PHASE_AZURE_SERVICE_CONNECTION: $(AZURE_SERVICE_CONNECTION)
+                PHASE_AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                PHASE_AZURE_AI_PROJECT_ID: $(AZURE_AI_PROJECT_ID)
+                PHASE_AZURE_AI_PROJECT_ENDPOINT: $(AZURE_AI_PROJECT_ENDPOINT)
+                PHASE_BUILD_ID: $(Build.BuildId)
+                PHASE_COMBO_ID: $(comboId)
+            - task: AzureCLI@2
+              displayName: Authenticate, scaffold and configure agent
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: scaffold
+              env:
+                PHASE_AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                PHASE_REPO_ROOT: $(Build.SourcesDirectory)
+                PHASE_BUILD_ID: $(Build.BuildId)
+                PHASE_JOB_ATTEMPT: $(System.JobAttempt)
+                PHASE_COMBO_ID: $(comboId)
+                PHASE_AZURE_AI_PROJECT_ID: $(AZURE_AI_PROJECT_ID)
+                PHASE_TOOLBOX_PROJECT_ID: $(TOOLBOX_PROJECT_ID)
+                PHASE_TOOLBOX_PROJECT_ID_WESTUS2: $(TOOLBOX_PROJECT_ID_WESTUS2)
+                PHASE_GH_PAT: $(GH_PAT)
+                PHASE_github_pat: $(GH_PAT)
+                PHASE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN: $(PLAYWRIGHT_SERVICE_ACCESS_TOKEN)
+                PHASE_RAI_POLICY_ID: $(AZURE_AI_RAI_POLICY_ID)
+                PHASE_SKIP_ACR_CREATION: $(skipAcrCreation)
+            - task: AzureCLI@2
+              displayName: Provision Azure resources
+              condition: and(succeeded(), ne(variables['SKIP_PROVISION'], 'true'))
+              timeoutInMinutes: 15
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: provision
+            - task: AzureCLI@2
+              displayName: Verify connections and prepare deployment
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: prepare-deploy
+            - task: AzureCLI@2
+              displayName: Deploy agent
+              name: deploy_agent
+              timeoutInMinutes: 30
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: deploy
+              env:
+                SKIP_ACR_CREATION: $(skipAcrCreation)
+            - task: AzureCLI@2
+              displayName: Verify deployed toolbox and agent environment
+              timeoutInMinutes: 7
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: verify-deploy
+            - task: AzureCLI@2
+              displayName: Surface Foundry deploy error
+              condition: failed()
+              continueOnError: true
+              timeoutInMinutes: 3
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: diagnose-deploy
+            - task: AzureCLI@2
+              displayName: Wait for readiness and create agent session
+              timeoutInMinutes: 19
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: session
+              env:
+                PHASE_REPO_ROOT: $(Build.SourcesDirectory)
+            - task: AzureCLI@2
+              displayName: Invoke agent
+              timeoutInMinutes: 15
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: invoke
+              env:
+                REPO_ROOT: $(Build.SourcesDirectory)
+                COMBO_ID: $(comboId)
+            - task: AzureCLI@2
+              displayName: Guardrail block test
+              condition: and(succeeded(), contains(variables['SAMPLE_PATH'], 'content-safety-guardrail'), eq(variables['PROTOCOL'], 'responses'))
+              timeoutInMinutes: 10
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: guardrail
+              env:
+                REPO_ROOT: $(Build.SourcesDirectory)
+                GUARDRAIL_TRIGGER: $(CONTENT_SAFETY_TEST_PROMPT)
+            - task: AzureCLI@2
+              displayName: Voice Live smoke test
+              condition: and(succeeded(), eq(variables['VOICE_LIVE'], 'true'))
+              timeoutInMinutes: 20
+              retryCountOnTaskFailure: 3
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: voicelive
+              env:
+                REPO_ROOT: $(Build.SourcesDirectory)
+                AZURE_AI_PROJECT_ENDPOINT: $(AZURE_AI_PROJECT_ENDPOINT)
+                AZURE_AI_PROJECT_NAME: $(AZURE_AI_PROJECT_NAME)
+            - task: AzureCLI@2
+              displayName: Check agent status
+              condition: always()
+              timeoutInMinutes: 3
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: status
+            - task: AzureCLI@2
+              displayName: Check agent logs and feature assertions
+              condition: always()
+              timeoutInMinutes: 8
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: evidence
+              env:
+                REPO_ROOT: $(Build.SourcesDirectory)
+                COMBO_ID: $(comboId)
+            - task: AzureCLI@2
+              displayName: Delete agent session
+              condition: always()
+              continueOnError: true
+              timeoutInMinutes: 3
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: delete-session
+            - task: AzureCLI@2
+              displayName: Delete temporary toolboxes
+              condition: always()
+              timeoutInMinutes: 5
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: delete-toolboxes
+              env:
+                REPO_ROOT: $(Build.SourcesDirectory)
+            - bash: bash .azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh results
+              displayName: Write status file and stage artifacts
+              condition: always()
+              env:
+                JOB_STATUS: $(Agent.JobStatus)
+                COMBO_ID: $(comboId)
+                ARTIFACT_STAGING: $(Build.ArtifactStagingDirectory)
+            - publish: $(Build.ArtifactStagingDirectory)/cloud-e2e-results-$(comboId)
+              artifact: cloud-e2e-results-$(comboId)
+              displayName: Publish test artifacts
+              condition: always()
+            - task: AzureCLI@2
+              displayName: Teardown Azure resources
+              condition: and(always(), ne(variables['SKIP_PROVISION'], 'true'))
+              timeoutInMinutes: 10
+              inputs:
+                azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                visibleAzLogin: false
+                scriptType: bash
+                scriptLocation: scriptPath
+                scriptPath: $(Build.SourcesDirectory)/.azure-pipelines/scripts/hosted-agents/run-hosted-agent.sh
+                arguments: teardown
+
+  # ── Summary ─────────────────────────────────────────────────────────
+  - stage: Summary
+    displayName: E2E Summary
+    dependsOn:
+      - Discover
+      - ${{ each shard in parameters.shards }}:
+        - CloudE2E_${{ shard }}
+    condition: and(succeeded('Discover'), ne(dependencies.Discover.outputs['DiscoverSamples.discover.count'], '0'))
+    jobs:
+      - job: PublishSummary
+        displayName: Publish E2E summary
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - download: current
+            displayName: Download result artifacts
+            patterns: |
+              HostedAgentSamplesMatrix/entries.json
+              cloud-e2e-results-*/result.txt
+
+          - bash: |
+              set -euo pipefail
+              entries="$PIPELINE_WORKSPACE/HostedAgentSamplesMatrix/entries.json"
+              mkdir -p /tmp/status
+
+              summary=/tmp/status/summary.md
+              {
+                echo "## Cloud E2E Sample Status"
+                echo ""
+                echo "| Sample | Toolbox | Deploy | Status |"
+                echo "|--------|---------|--------|--------|"
+              } > "$summary"
+
+              samples_json='[]'
+              while IFS=$'\t' read -r combo_id name toolbox_label path deploy_mode dep_resolution; do
+                # Read the explicit status from result.txt, not just artifact presence.
+                status_file="$PIPELINE_WORKSPACE/cloud-e2e-results-$combo_id/result.txt"
+                if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
+                  status="success"; badge="Passed"
+                else
+                  status="failure"; badge="Failed"
+                fi
+                if [ "$deploy_mode" = "code" ]; then
+                  deploy_display="code (${dep_resolution})"
+                else
+                  deploy_display="container"
+                fi
+                echo "| $name | ${toolbox_label:--} | $deploy_display | $badge |" >> "$summary"
+                samples_json=$(jq -c \
+                  --arg id "$combo_id" --arg name "$name" --arg path "$path" \
+                  --arg toolbox "$toolbox_label" --arg status "$status" \
+                  --arg deploy_mode "$deploy_mode" --arg dep_resolution "$dep_resolution" \
+                  '. + [{id: $id, name: $name, path: $path, toolbox: $toolbox, deploy_mode: $deploy_mode, dep_resolution: $dep_resolution, status: $status}]' \
+                  <<< "$samples_json")
+              done < <(jq -r '.[] | [.comboId, .sampleName, .toolboxLabel, .samplePath, .deployMode, .depResolution] | @tsv' "$entries")
+
+              {
+                echo ""
+                echo "**Run:** [$BUILD_NUMBER]($BUILD_URL)"
+                echo "**Triggered by:** $BUILD_REASON"
+              } >> "$summary"
+
+              jq -n \
+                --arg run_id "$BUILD_ID" \
+                --arg run_number "$BUILD_NUMBER" \
+                --arg event "$BUILD_REASON" \
+                --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --argjson samples "$samples_json" \
+                '{run_id: $run_id, run_number: $run_number, event: $event, timestamp: $timestamp, samples: $samples}' \
+                > /tmp/status/sample-status.json
+
+              cat "$summary"
+              cat /tmp/status/sample-status.json
+              echo "##vso[task.uploadsummary]$summary"
+            displayName: Generate sample status summary
+            condition: always()
+            env:
+              PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+              BUILD_ID: $(Build.BuildId)
+              BUILD_NUMBER: $(Build.BuildNumber)
+              BUILD_REASON: $(Build.Reason)
+              BUILD_URL: $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)
+
+          - publish: /tmp/status
+            artifact: sample-status
+            displayName: Upload status artifact
+            condition: always()
+
+  # ── No-op signal ────────────────────────────────────────────────────
+  - stage: NoSamples
+    displayName: No hosted-agent samples to validate
+    dependsOn: Discover
+    condition: and(succeeded(), eq(dependencies.Discover.outputs['DiscoverSamples.discover.count'], '0'))
+    jobs:
+      - job: NoOp
+        displayName: No hosted-agent sample changes
+        steps:
+          - checkout: none
+          - bash: echo "No hosted-agent samples were selected for this run."
+            displayName: Report no-op

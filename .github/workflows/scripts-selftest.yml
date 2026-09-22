@@ -11,7 +11,7 @@ name: scripts self-test
 # construction: permissions is contents:read only, no secrets, no OIDC, no privileged runners.
 # These are pure script tests. Do NOT make any job here a required check and do NOT edit rulesets.
 #
-# Trigger scope: validation scripts, their tests, or the two validation workflow definitions.
+# Trigger scope: validation scripts, ADO pipeline code/fixtures, or validation workflow definitions.
 # A normal sample-authoring PR (samples/**, docs, etc.) never triggers it, so there is zero added
 # friction for contributors.
 # No `push:` trigger: PR-time is the gate that matters; `workflow_dispatch` covers manual/backfill.
@@ -19,6 +19,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - '.azure-pipelines/**'
       - '.github/scripts/**'
       - '.github/workflows/validate.yml'
       - '.github/workflows/scripts-selftest.yml'
@@ -30,6 +31,35 @@ permissions:
   contents: read
 
 jobs:
+  ado-pipelines-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install offline test dependencies
+        run: |
+          python -m pip install -r .github/scripts/requirements.txt
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      - name: Test hosted-agent helpers and fixture contracts
+        run: |
+          python -m unittest discover -s .azure-pipelines/scripts/hosted-agents/tests -p 'test_*.py'
+          bash .azure-pipelines/scripts/hosted-agents/tests/test-hosted-agent-ci-toolboxes.sh
+          bash .azure-pipelines/scripts/hosted-agents/tests/test-hosted-agent-session-quota.sh
+          python .github/scripts/test/test_ado_pipeline_fixtures.py
+      - name: Test Bicep pipeline selection
+        run: python .azure-pipelines/scripts/bicep/test_bicep_pipeline.py
+      - name: Check shell syntax
+        run: |
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(find .azure-pipelines/scripts -name '*.sh' -type f)
+
   # --- Required-gate structure: hermetic Bash assertions, no credentials -------------------------
   workflow-structure-harness:
     runs-on: ubuntu-latest

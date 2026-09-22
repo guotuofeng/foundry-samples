@@ -1,0 +1,19 @@
+version: 1
+
+sample:
+  owner: aochengwang
+  experiences: [azd, vscode]
+
+tests:
+  - name: custom-store-memory-round-trip
+    turns:
+      - input: Remember that my contract project codename is 62CFD6A4A872. After saving it, reply with exactly MEMORY-SAVED-62CFD6A4A872.
+        assertions:
+          - source: assistant_text
+            type: contains
+            value: MEMORY-SAVED-62CFD6A4A872
+      - input: Search your saved memories for my contract project codename. Reply with only the saved codename.
+        assertions:
+          - source: assistant_text
+            type: equals
+            value: 62CFD6A4A872

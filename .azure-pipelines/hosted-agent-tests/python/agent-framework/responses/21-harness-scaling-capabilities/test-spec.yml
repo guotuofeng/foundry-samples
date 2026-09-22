@@ -1,0 +1,21 @@
+version: 1
+
+sample:
+  owner: yih
+  experiences: [azd, vscode]
+
+tests:
+  - name: approve-simulated-trade
+    turns:
+      - input: Buy exactly 10 shares of MSFT using place_trade, then report the confirmation identifier.
+        approvals:
+          mcp:
+            - server_label: agent_framework
+              name: place_trade
+        assertions:
+          - source: raw
+            type: regex
+            value: '"type"\s*:\s*"function_call_output"'
+          - source: assistant_text
+            type: regex
+            value: 'TRADE-[A-Z0-9]{8}'
