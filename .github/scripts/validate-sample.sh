@@ -396,17 +396,28 @@ GENERATE_UNIQUE_NAME_USED=false
 GENERATED_RESOURCE_NAME=""
 
 generate_unique_resource_name() {
-    local base sanitized
-    base="$(basename "$SAMPLE_DIR")"
+    local base sanitized path_hash run_id
+    # Use the full sample path (not just its basename) so parallel matrix
+    # entries for the same sample name in different languages (for example
+    # samples/{python,java,csharp,typescript}/quickstart/chat-with-agent)
+    # don't collapse onto the same generated-name prefix.
+    base="$SAMPLE_DIR"
     # Lowercase, replace anything unsafe for a resource name with '-', collapse
     # runs of '-', and trim leading/trailing '-'.
     sanitized="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
     sanitized="$(printf '%s' "$sanitized" | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
     [ -n "$sanitized" ] || sanitized="sample"
-    # Truncate the sanitized base so the full name (base + timestamp + random
-    # suffix) stays comfortably under common 63-char resource-name limits.
-    sanitized="${sanitized:0:24}"
-    printf 'validation-%s-%s-%s' "$sanitized" "$(date +%s)" "$RANDOM"
+    # Truncate the sanitized base for readability only; a checksum of the
+    # full (untruncated) sample path is included below so two samples can't
+    # collide just because truncation made their prefixes match.
+    path_hash="$(printf '%s' "$sanitized" | cksum | cut -d' ' -f1)"
+    sanitized="${sanitized:0:12}"
+    # Include the workflow run id/attempt (falling back to "local" for
+    # non-Actions invocations) so a $RANDOM collision between two concurrent
+    # runs of the same sample can't let one job snapshot or clean up
+    # another job's resources.
+    run_id="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+    printf 'validation-%s-%s-%s-%s' "$sanitized" "$path_hash" "$run_id" "$RANDOM"
 }
 
 escape_bash_pattern_literal() {

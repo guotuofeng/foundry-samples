@@ -31,10 +31,12 @@ class LiveResourceCleanupTests(unittest.TestCase):
                             "existing-agent": {
                                 "exists": True,
                                 "versions": ["1", "2"],
+                                "conversations": [],
                             },
                             "new-agent": {
                                 "exists": False,
                                 "versions": [],
+                                "conversations": [],
                             },
                         },
                     }
@@ -101,6 +103,51 @@ class LiveResourceCleanupTests(unittest.TestCase):
         self.assertIn("/agents/agent%2Fname/versions?", request.call_args_list[0].args[1])
         self.assertIn("after=cursor-1", request.call_args_list[1].args[1])
 
+    def test_cleanup_preserves_pre_existing_conversations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "snapshot.json"
+            snapshot.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "foundry_agent_versions": {
+                            "existing-agent": {
+                                "exists": True,
+                                "versions": [],
+                                "conversations": ["conv_pre"],
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deleted_urls: list[str] = []
+
+            def record_delete(method: str, url: str, token: str) -> dict:
+                deleted_urls.append(url)
+                return {}
+
+            with (
+                mock.patch.object(cleanup, "foundry_endpoint", return_value="https://example.test/project"),
+                mock.patch.object(cleanup, "access_token", return_value="token"),
+                mock.patch.object(cleanup, "agent_exists", return_value=True),
+                mock.patch.object(cleanup, "list_agent_versions", return_value=set()),
+                mock.patch.object(
+                    cleanup,
+                    "list_agent_conversations",
+                    return_value={"conv_pre", "conv_new"},
+                ),
+                mock.patch.object(cleanup, "request_json", side_effect=record_delete),
+            ):
+                deleted = cleanup.cleanup(snapshot)
+
+            self.assertEqual(deleted, 1)
+            self.assertEqual(
+                deleted_urls,
+                ["https://example.test/project/openai/v1/conversations/conv_new?api-version=v1"],
+            )
+            self.assertFalse(any("conv_pre" in url for url in deleted_urls))
+
     def test_missing_agent_is_an_empty_snapshot(self) -> None:
         missing = cleanup.FoundryApiError("GET", "https://example.test", 404, "not found")
         with mock.patch.object(cleanup, "request_json", side_effect=missing):
@@ -148,7 +195,7 @@ class LiveResourceCleanupTests(unittest.TestCase):
                     {
                         "schema_version": 1,
                         "foundry_agent_versions": {
-                            "new-agent": {"exists": False, "versions": []},
+                            "new-agent": {"exists": False, "versions": [], "conversations": []},
                         },
                     }
                 ),

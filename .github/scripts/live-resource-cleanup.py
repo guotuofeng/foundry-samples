@@ -6,10 +6,10 @@ harness generates fresh per run, so it can't collide with pre-existing or
 concurrently-running resources). For that name, this removes:
   - agent versions created during the run (via before/after snapshot diff)
   - the agent itself, if it did not exist before the run
-  - any conversations associated with that agent name (via the Foundry
-    conversations API's agent_name filter) -- safe without a snapshot,
-    since an agent name that didn't exist before the run can't have
-    pre-existing conversations attached to it.
+  - conversations created during the run (via before/after snapshot diff of
+    the Foundry conversations API's agent_name filter) -- an agent that
+    already existed before the run may have had pre-existing conversations,
+    so only the post-snapshot delta is removed.
 """
 
 from __future__ import annotations
@@ -228,6 +228,7 @@ def take_snapshot(agent_names: list[str]) -> dict[str, Any]:
         resources[name] = {
             "exists": exists,
             "versions": sorted(list_agent_versions(endpoint, token, name)) if exists else [],
+            "conversations": sorted(list_agent_conversations(endpoint, token, name)),
         }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -249,6 +250,7 @@ def load_snapshot(path: Path) -> dict[str, dict[str, Any]]:
     for name, state in resources.items():
         exists = state.get("exists") if isinstance(state, dict) else None
         versions = state.get("versions") if isinstance(state, dict) else None
+        conversations = state.get("conversations") if isinstance(state, dict) else None
         if (
             not isinstance(name, str)
             or not name
@@ -256,9 +258,14 @@ def load_snapshot(path: Path) -> dict[str, dict[str, Any]]:
             or not isinstance(versions, list)
             or any(not isinstance(version, str) or not version for version in versions)
             or (not exists and versions)
+            or not isinstance(conversations, list)
+            or any(
+                not isinstance(conversation_id, str) or not conversation_id
+                for conversation_id in conversations
+            )
         ):
             raise CleanupError(f"cleanup snapshot contains an invalid agent entry: {path}")
-        normalized[name] = {"exists": exists, "versions": versions}
+        normalized[name] = {"exists": exists, "versions": versions, "conversations": conversations}
     return normalized
 
 
@@ -272,11 +279,14 @@ def cleanup(snapshot_path: Path) -> int:
     token = access_token()
     deleted = 0
     for agent_name, previous_state in before.items():
-        # Conversations are scoped by agent name (not by the pre/post-run
-        # snapshot), since an agent that didn't previously exist can't have
-        # pre-existing conversations. Delete these first: some Foundry
-        # deployments reject deleting an agent that still has conversations.
-        for conversation_id in list_agent_conversations(endpoint, token, agent_name):
+        # Conversations are scoped by agent name, but an agent that already
+        # existed before this run may have had pre-existing conversations
+        # attached to it, so only delete the post-snapshot delta. Delete
+        # these first: some Foundry deployments reject deleting an agent
+        # that still has conversations.
+        current_conversations = list_agent_conversations(endpoint, token, agent_name)
+        created_conversations = current_conversations - set(previous_state["conversations"])
+        for conversation_id in created_conversations:
             delete_conversation(endpoint, token, conversation_id)
             print(f"Deleted live-created conversation: {conversation_id} (agent {agent_name})")
             deleted += 1
