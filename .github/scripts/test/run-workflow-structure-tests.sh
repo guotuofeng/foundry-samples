@@ -2,8 +2,8 @@
 # Structural regression gate for the single required `trusted` job.
 #
 # Root cause pinned here: a job-level `if:` skip concludes `skipped`, and GitHub treats a
-# skipped required check as satisfied. The job must run and fail affected-sample forks explicitly
-# after build readiness while allowing a valid empty detector result to pass for every PR origin.
+# skipped required check as satisfied. The job must run for every triggered PR while credentialed
+# steps remain restricted to same-repository branches.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -167,21 +167,7 @@ expect_has "docs-only success requires an empty detector result" 'needs\.detect\
 expect_not_has "docs-only success is not restricted by PR origin" 'head\.repo\.fork' "$TMP/docs-only.yml"
 
 extract_step "Validate changed sample build readiness (in-job parallel)" "$TMP/build-readiness.yml"
-extract_step "Reject fork until maintainer promotion" "$TMP/fork-reject.yml"
-expect_has "fork rejection requires affected samples" 'needs\.detect\.outputs\.has_changes == .true.' "$TMP/fork-reject.yml"
-expect_has "fork rejection is fork-only" 'head\.repo\.fork == true' "$TMP/fork-reject.yml"
-expect_has "fork rejection runs after a readiness failure" '!cancelled\(\)' "$TMP/fork-reject.yml"
-expect_has "fork rejection checks OIDC request surface" 'ACTIONS_ID_TOKEN_REQUEST_(URL|TOKEN)' "$TMP/fork-reject.yml"
-expect_has "fork rejection emits promotion error" '::error::.*promot' "$TMP/fork-reject.yml"
-expect_has "fork rejection exits non-zero" '^[[:space:]]*exit 1$' "$TMP/fork-reject.yml"
-
-readiness_line="$(grep -nF -- '- name: Validate changed sample build readiness (in-job parallel)' "$TRUSTED" | cut -d: -f1)"
-fork_line="$(grep -nF -- '- name: Reject fork until maintainer promotion' "$TRUSTED" | cut -d: -f1)"
-if [ -n "$readiness_line" ] && [ -n "$fork_line" ] && [ "$readiness_line" -lt "$fork_line" ]; then
-    pass "credential-free build readiness runs before fork rejection"
-else
-    fail "credential-free build readiness must run before fork rejection"
-fi
+expect_not_has "explicit fork rejection is absent" 'Reject fork until maintainer promotion' "$TRUSTED"
 
 # Any step containing a current credential/live-service marker must carry an explicit same-repo guard.
 if awk '
