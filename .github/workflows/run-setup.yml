@@ -117,7 +117,12 @@ jobs:
 
           EVENT="${{ github.event_name }}"
 
+          # If PR is from a fork, pushing will be rejected. Detect and skip.
           if [ "$EVENT" = "pull_request" ]; then
+            if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+              echo "PR is from a fork; cannot push changes back to fork branch. Skipping push."
+              exit 0
+            fi
             BRANCH="${{ github.head_ref }}"
             echo "Pushing fixes to PR branch: $BRANCH"
             git push origin "HEAD:refs/heads/$BRANCH"
