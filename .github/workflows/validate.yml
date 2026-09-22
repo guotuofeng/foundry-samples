@@ -7,8 +7,9 @@ name: validate
 # FORK-SAFE BY CONSTRUCTION (this is the headline property):
 #   - on: pull_request  (NEVER pull_request_target) — so PRs from forks run this with a
 #     read-only GITHUB_TOKEN and NO access to secrets, per GitHub's documented behavior.
-#   - The required `trusted` job runs for every triggered PR. Repository settings require maintainer
-#     approval before workflows from forks run; credentialed steps remain explicitly fork-gated.
+#   - The required `trusted` job ALWAYS runs. Forks execute its credential-free readiness path, then
+#     fail explicitly with a promotion-required error. A job-level fork skip is forbidden:
+#     GitHub treats a required check that concludes `skipped` as satisfied.
 #   - `trusted` uses the status-function condition `!cancelled()` so a failed/malformed `detect`
 #     dependency starts the job and fails its first contract-check step instead of skipping open.
 #   - Every credentialed live-service step has an explicit same-repo guard. Fork isolation remains
@@ -152,9 +153,9 @@ jobs:
   #   - SINGLE JOB, no per-language matrix. A matrix of required checks reinstates the rejected
   #     aggregator/gate-shim. Speed comes from IN-JOB parallelism (the readiness step backgrounds
   #     validate-sample.sh per changed sample), never from fan-out into multiple checks.
-  #   - ALWAYS RUNS for every triggered PR. Repository settings hold fork workflows for maintainer
-  #     approval; once triggered, forks run only credential-free readiness. Never restore a job-level
-  #     fork/draft `if:`: GitHub treats a required job that concludes `skipped` as satisfying the merge gate.
+  #   - ALWAYS RUNS for every triggered PR. Affected-sample forks run credential-free readiness, then
+  #     fail in-job with a promotion-required error. Never restore a job-level fork/draft `if:`: P3.3 proved that
+  #     GitHub treats a required job that concludes `skipped` as satisfying the merge gate.
   #   - FAILS CLOSED when `detect` fails or emits malformed outputs. The exact job-level
   #     `!cancelled()` status condition starts trusted after dependency failure; the FIRST step
   #     validates the dependency result/output contract before checkout or docs-only handling.
@@ -366,6 +367,19 @@ jobs:
             exit 1
           fi
           echo "Build readiness green for all $pass changed sample(s)."
+
+      # An affected-sample fork must produce a terminal FAILURE, never a skipped required check.
+      # This step uses a status function so it still emits the promotion instruction after readiness fails.
+      - name: Reject fork until maintainer promotion
+        if: ${{ !cancelled() && needs.detect.outputs.has_changes == 'true' && github.event.pull_request.head.repo.fork == true }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::Fork runner unexpectedly received an OIDC request surface; refusing to continue."
+            exit 1
+          fi
+          echo "::error::Fork PRs cannot satisfy the trusted gate directly. A maintainer must promote this commit to a same-repo branch, where live-service validation can run."
+          exit 1
 
       # --- Reach the warm project via OIDC (only after build readiness is green) -
       # Reached only when real samples changed and readiness passed. This
