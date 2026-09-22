@@ -175,7 +175,6 @@ def list_agent_conversations(endpoint: str, token: str, agent_name: str) -> set[
     after = ""
     while True:
         query = {
-            "api-version": API_VERSION,
             "limit": "100",
             "order": "asc",
             "agent_name": agent_name,
@@ -207,10 +206,10 @@ def list_agent_conversations(endpoint: str, token: str, agent_name: str) -> set[
 
 
 def delete_conversation(endpoint: str, token: str, conversation_id: str) -> None:
-    url = (
-        f"{endpoint}/openai/v1/conversations/{quote(conversation_id, safe='')}?"
-        f"{urlencode({'api-version': API_VERSION})}"
-    )
+    # /openai/v1/... paths encode their own API version; an explicit
+    # api-version query parameter is rejected here (unlike the /agents/...
+    # endpoints below, which are not under /v1 and do require it).
+    url = f"{endpoint}/openai/v1/conversations/{quote(conversation_id, safe='')}"
     try:
         request_json("DELETE", url, token)
     except FoundryApiError as exc:

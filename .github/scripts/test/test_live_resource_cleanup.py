@@ -144,7 +144,7 @@ class LiveResourceCleanupTests(unittest.TestCase):
             self.assertEqual(deleted, 1)
             self.assertEqual(
                 deleted_urls,
-                ["https://example.test/project/openai/v1/conversations/conv_new?api-version=v1"],
+                ["https://example.test/project/openai/v1/conversations/conv_new"],
             )
             self.assertFalse(any("conv_pre" in url for url in deleted_urls))
 
@@ -179,13 +179,30 @@ class LiveResourceCleanupTests(unittest.TestCase):
         first_url = request.call_args_list[0].args[1]
         self.assertIn("/openai/v1/conversations?", first_url)
         self.assertIn("agent_name=my-agent", first_url)
+        self.assertNotIn("api-version", first_url)
         self.assertIn("after=cursor-1", request.call_args_list[1].args[1])
+        self.assertNotIn("api-version", request.call_args_list[1].args[1])
 
     def test_delete_conversation_treats_missing_conversation_as_success(self) -> None:
         missing = cleanup.FoundryApiError("DELETE", "https://example.test", 404, "not found")
         with mock.patch.object(cleanup, "request_json", side_effect=missing) as request:
             cleanup.delete_conversation("https://example.test/project", "token", "conv_1")
         request.assert_called_once()
+        self.assertNotIn("api-version", request.call_args.args[1])
+
+    def test_conversation_urls_omit_api_version_while_agent_urls_keep_it(self) -> None:
+        """/openai/v1/... paths encode their own version; /agents/... does not."""
+        with mock.patch.object(cleanup, "request_json", return_value={"data": [], "has_more": False}) as request:
+            cleanup.list_agent_conversations("https://example.test/project", "token", "my-agent")
+        self.assertNotIn("api-version", request.call_args.args[1])
+
+        with mock.patch.object(cleanup, "request_json", return_value={"data": [], "has_more": False}) as request:
+            cleanup.list_agent_versions("https://example.test/project", "token", "my-agent")
+        self.assertIn("api-version=v1", request.call_args.args[1])
+
+        with mock.patch.object(cleanup, "request_json", return_value={}) as request:
+            cleanup.agent_exists("https://example.test/project", "token", "my-agent")
+        self.assertIn("api-version=v1", request.call_args.args[1])
 
     def test_cleanup_deletes_conversations_before_agent_and_versions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -226,7 +243,7 @@ class LiveResourceCleanupTests(unittest.TestCase):
             self.assertEqual(
                 order,
                 [
-                    "https://example.test/project/openai/v1/conversations/conv_1?api-version=v1",
+                    "https://example.test/project/openai/v1/conversations/conv_1",
                     "https://example.test/project/agents/new-agent?api-version=v1",
                 ],
             )
