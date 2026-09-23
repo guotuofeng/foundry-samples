@@ -65,6 +65,7 @@ public class VoiceAgentLiveFunctionToolSample {
             .allowPreview(true);
         AgentsClient agents = builder.buildAgentsClient();
         BetaVoiceAgentWebSocketClient realtime = builder.beta().buildBetaVoiceAgentWebSocketClient();
+        VoiceAgentSampleUtils.requireUnusedAgentName(agents, agentName);
 
         Map<String, Object> cityProperty = new LinkedHashMap<>();
         cityProperty.put("type", "string");
@@ -86,8 +87,10 @@ public class VoiceAgentLiveFunctionToolSample {
             .setOutputModalities(Collections.singletonList(VoiceOutputModality.TEXT))
             .setTools(Collections.<VoiceAgentTool>singletonList(weatherTool));
 
+        boolean agentCreated = false;
         try {
             agents.createAgentVersion(agentName, new CreateAgentVersionInput(definition));
+            agentCreated = true;
             System.out.println("Created voice agent: " + agentName);
             try (BetaVoiceAgentWebSocketSessionClient session = realtime.openWebSocketSession(agentName)) {
                 ExecutorService receiver = Executors.newSingleThreadExecutor();
@@ -109,8 +112,10 @@ public class VoiceAgentLiveFunctionToolSample {
                 }
             }
         } finally {
-            agents.deleteAgent(agentName);
-            System.out.println("Deleted voice agent: " + agentName);
+            if (agentCreated) {
+                agents.deleteAgent(agentName);
+                System.out.println("Deleted voice agent: " + agentName);
+            }
         }
     }
 

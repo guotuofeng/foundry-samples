@@ -36,10 +36,13 @@ public class VoiceAgentVersionsSample {
             .endpoint(endpoint)
             .allowPreview(true)
             .buildAgentsClient();
+        VoiceAgentSampleUtils.requireUnusedAgentName(client, agentName);
+        boolean agentCreated = false;
         try {
             AgentVersionDetails first = client.createAgentVersion(agentName,
                 new CreateAgentVersionInput(VoiceAgentSampleUtils.createDefinition(modelType, model,
                     "You are a helpful voice assistant.")));
+            agentCreated = true;
             AgentVersionDetails released = client.createAgentVersion(agentName,
                 new CreateAgentVersionInput(VoiceAgentSampleUtils.createDefinition(modelType, model,
                     "You are a helpful voice assistant. Greet the caller by name."))
@@ -63,8 +66,10 @@ public class VoiceAgentVersionsSample {
             AgentVersionDetails fetched = client.getAgentVersionDetails(agentName, released.getVersion());
             System.out.println("Fetched version: " + fetched.getVersion());
         } finally {
-            client.deleteAgent(agentName);
-            System.out.println("Deleted agent: " + agentName);
+            if (agentCreated) {
+                client.deleteAgent(agentName);
+                System.out.println("Deleted agent: " + agentName);
+            }
         }
     }
 }

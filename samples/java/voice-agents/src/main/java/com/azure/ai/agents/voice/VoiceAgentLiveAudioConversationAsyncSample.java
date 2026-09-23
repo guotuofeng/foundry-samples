@@ -89,8 +89,11 @@ public class VoiceAgentLiveAudioConversationAsyncSample {
         request.put("kind", "voice");
         request.put("name", agentName);
         AtomicReference<String> conversationId = new AtomicReference<>();
+        AtomicBoolean agentCreated = new AtomicBoolean();
 
-        betaAgents.createAgentFromPrompt(BinaryData.fromObject(request))
+        VoiceAgentSampleUtils.requireUnusedAgentName(agents, agentName)
+            .then(betaAgents.createAgentFromPrompt(BinaryData.fromObject(request)))
+            .doOnNext(generated -> agentCreated.set(true))
             .flatMap(generated -> {
                 VoiceAgentDefinition definition
                     = (VoiceAgentDefinition) generated.getVersions().getLatest().getDefinition();
@@ -105,14 +108,18 @@ public class VoiceAgentLiveAudioConversationAsyncSample {
             .then(Mono.defer(() -> conversationId.get() == null
                 ? Mono.fromRunnable(() -> System.out.println("No persisted conversation ID was returned."))
                 : VoiceAgentRealtimeSampleUtils.readConversation(conversations, agentName, conversationId.get())))
-            .then(Mono.defer(() -> cleanupAgent(agents, agentName, keepAgent)))
-            .onErrorResume(error -> Mono.defer(() -> cleanupAgent(agents, agentName, keepAgent))
+            .then(Mono.defer(() -> cleanupAgent(agents, agentName, keepAgent, agentCreated.get())))
+            .onErrorResume(error -> Mono.defer(() -> cleanupAgent(agents, agentName, keepAgent, agentCreated.get()))
                 .onErrorResume(cleanupError -> Mono.empty())
                 .then(Mono.error(error)))
             .block();
     }
 
-    private static Mono<Void> cleanupAgent(AgentsAsyncClient agents, String agentName, boolean keepAgent) {
+    private static Mono<Void> cleanupAgent(AgentsAsyncClient agents, String agentName, boolean keepAgent,
+        boolean agentCreated) {
+        if (!agentCreated) {
+            return Mono.empty();
+        }
         if (keepAgent) {
             return Mono.fromRunnable(() -> System.out.println("Kept voice agent: " + agentName));
         }

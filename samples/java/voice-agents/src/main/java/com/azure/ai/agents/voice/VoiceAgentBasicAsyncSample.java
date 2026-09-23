@@ -12,6 +12,8 @@ import com.azure.ai.agents.models.CreateAgentVersionInput;
 import com.azure.ai.agents.models.VoiceModelType;
 import reactor.core.publisher.Mono;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * Demonstrates the asynchronous voice-agent lifecycle.
  *
@@ -37,10 +39,13 @@ public class VoiceAgentBasicAsyncSample {
             .endpoint(endpoint)
             .allowPreview(true)
             .buildAgentsAsyncClient();
+        AtomicBoolean agentCreated = new AtomicBoolean();
 
-        client.createAgentVersion(agentName,
+        VoiceAgentSampleUtils.requireUnusedAgentName(client, agentName)
+            .then(client.createAgentVersion(agentName,
                 new CreateAgentVersionInput(VoiceAgentSampleUtils.createDefinition(modelType, model,
-                    "You are a friendly voice assistant. Keep replies short and natural.")))
+                    "You are a friendly voice assistant. Keep replies short and natural."))))
+            .doOnNext(created -> agentCreated.set(true))
             .doOnNext(created -> System.out.printf("Created voice agent %s, version %s%n",
                 created.getName(), created.getVersion()))
             .then(client.getAgent(agentName))
@@ -57,10 +62,15 @@ public class VoiceAgentBasicAsyncSample {
             .then(client.enableAgent(agentName))
             .then(client.deleteAgent(agentName)
                 .doOnSuccess(ignored -> System.out.println("Deleted agent after successful completion: " + agentName)))
-            .onErrorResume(error -> client.deleteAgent(agentName)
-                .doOnSuccess(ignored -> System.out.println("Deleted agent during error cleanup: " + agentName))
-                .onErrorResume(cleanupError -> Mono.empty())
-                .then(Mono.error(error)))
+            .onErrorResume(error -> {
+                if (!agentCreated.get()) {
+                    return Mono.error(error);
+                }
+                return client.deleteAgent(agentName)
+                    .doOnSuccess(ignored -> System.out.println("Deleted agent during error cleanup: " + agentName))
+                    .onErrorResume(cleanupError -> Mono.empty())
+                    .then(Mono.error(error));
+            })
             .block();
     }
 }

@@ -131,7 +131,7 @@ final class VoiceAgentRealtimeSampleUtils {
             }
         }
 
-        double getSecondsReceived() {
+        synchronized double getSecondsReceived() {
             return bytesReceived / 2.0 / SAMPLE_RATE;
         }
 

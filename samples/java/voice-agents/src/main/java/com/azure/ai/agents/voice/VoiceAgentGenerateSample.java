@@ -37,6 +37,7 @@ public class VoiceAgentGenerateSample {
             .allowPreview(true);
         AgentsClient client = builder.buildAgentsClient();
         BetaAgentsClient betaClient = builder.beta().buildBetaAgentsClient();
+        VoiceAgentSampleUtils.requireUnusedAgentName(client, agentName);
 
         Map<String, String> request = new LinkedHashMap<>();
         request.put("kind", "voice");

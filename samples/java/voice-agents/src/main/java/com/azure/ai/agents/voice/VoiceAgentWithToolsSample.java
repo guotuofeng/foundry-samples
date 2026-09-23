@@ -57,6 +57,7 @@ public class VoiceAgentWithToolsSample {
             .endpoint(endpoint)
             .allowPreview(true)
             .buildAgentsClient();
+        VoiceAgentSampleUtils.requireUnusedAgentName(client, agentName);
 
         RealtimePcmAudioFormat pcm = new RealtimePcmAudioFormat()
             .setRate(Rate._24000);

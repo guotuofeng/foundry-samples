@@ -38,10 +38,13 @@ public class VoiceAgentBasicSample {
             .endpoint(endpoint)
             .allowPreview(true)
             .buildAgentsClient();
+        VoiceAgentSampleUtils.requireUnusedAgentName(client, agentName);
+        boolean agentCreated = false;
         try {
             AgentVersionDetails created = client.createAgentVersion(agentName,
                 new CreateAgentVersionInput(VoiceAgentSampleUtils.createDefinition(modelType, model,
                     "You are a friendly voice assistant. Keep replies short and natural.")));
+            agentCreated = true;
             System.out.printf("Created voice agent %s, version %s%n", created.getName(), created.getVersion());
 
             AgentDetails agent = client.getAgent(agentName);
@@ -60,8 +63,10 @@ public class VoiceAgentBasicSample {
             client.enableAgent(agentName);
             System.out.println("Enabled voice agent");
         } finally {
-            client.deleteAgent(agentName);
-            System.out.println("Deleted voice agent: " + agentName);
+            if (agentCreated) {
+                client.deleteAgent(agentName);
+                System.out.println("Deleted voice agent: " + agentName);
+            }
         }
     }
 }
